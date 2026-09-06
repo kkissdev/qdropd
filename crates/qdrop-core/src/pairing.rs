@@ -124,14 +124,38 @@ pub async fn run_offer(
 
 /// Side B: resolve the target, connect, prompt-provided `pin`, run the exchange.
 pub async fn run_request(local: LocalInfo, target: &str, pin: &str) -> Result<Paired, PairError> {
-    let addr = resolve_target(target).await?;
-    let mut stream = timeout(Duration::from_secs(10), TcpStream::connect(addr))
-        .await
-        .map_err(|_| PairError::Timeout)?
-        .with_context(|| format!("connecting to {addr}"))?;
+    let addrs = resolve_target(target).await?;
+    let mut stream = connect_any(&addrs).await?;
     stream.set_nodelay(true).ok();
 
     exchange(&mut stream, Role::Requester, pin, &local).await
+}
+
+/// Try each candidate address in turn; return the first TCP connection that
+/// succeeds. A connect that hangs is capped at 10s so a dead address can't
+/// stall the whole attempt.
+async fn connect_any(addrs: &[SocketAddr]) -> Result<TcpStream, PairError> {
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in addrs {
+        match timeout(Duration::from_secs(10), TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(e)) => {
+                tracing::debug!(%addr, "pairing connect failed: {e}");
+                last_err = Some(e);
+            }
+            Err(_) => {
+                tracing::debug!(%addr, "pairing connect timed out");
+                last_err = Some(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "connect timed out",
+                ));
+            }
+        }
+    }
+    Err(match last_err {
+        Some(e) => PairError::Io(e),
+        None => PairError::Protocol("no usable address for the target".into()),
+    })
 }
 
 /// The PIN-keyed exchange over an established byte stream. Split out so it can
@@ -290,9 +314,39 @@ impl PairAdvertisement {
     }
 }
 
-async fn resolve_target(target: &str) -> Result<SocketAddr, PairError> {
+/// Whether we can open a plain `TcpStream` to this address. IPv6 link-local
+/// (`fe80::/10`) needs a scope id that mDNS records don't carry, and the
+/// unspecified address is never a destination — both are dropped.
+fn is_dialable(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => !v4.is_unspecified(),
+        IpAddr::V6(v6) => !v6.is_unspecified() && (v6.segments()[0] & 0xffc0) != 0xfe80,
+    }
+}
+
+/// Order addresses best-first: routable before loopback, IPv4 before IPv6.
+fn addr_rank(ip: &IpAddr) -> u8 {
+    match ip {
+        IpAddr::V4(v4) if v4.is_loopback() => 2,
+        IpAddr::V6(v6) if v6.is_loopback() => 3,
+        IpAddr::V4(_) => 0,
+        IpAddr::V6(_) => 1,
+    }
+}
+
+fn sorted_dialable(mut addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    addrs.retain(|a| is_dialable(&a.ip()));
+    addrs.sort();
+    addrs.dedup();
+    addrs.sort_by_key(|a| addr_rank(&a.ip()));
+    addrs
+}
+
+/// Resolve a pairing target (a literal IP, or an mDNS name / instance id) to
+/// the set of addresses worth trying, best-first.
+async fn resolve_target(target: &str) -> Result<Vec<SocketAddr>, PairError> {
     if let Ok(ip) = target.parse::<IpAddr>() {
-        return Ok(SocketAddr::new(ip, PAIR_PORT));
+        return Ok(vec![SocketAddr::new(ip, PAIR_PORT)]);
     }
 
     let daemon = ServiceDaemon::new().context("starting mDNS browse for pairing")?;
@@ -314,8 +368,14 @@ async fn resolve_target(target: &str) -> Result<SocketAddr, PairError> {
                         .strip_suffix(&format!(".{PAIR_SERVICE_TYPE}"))
                         .unwrap_or("");
                     if name_matches || instance.eq_ignore_ascii_case(target) {
-                        if let Some(ip) = info.addresses.iter().next() {
-                            return Some(SocketAddr::new(ip.to_ip_addr(), info.port));
+                        let addrs = sorted_dialable(
+                            info.addresses
+                                .iter()
+                                .map(|ip| SocketAddr::new(ip.to_ip_addr(), info.port))
+                                .collect(),
+                        );
+                        if !addrs.is_empty() {
+                            return Some(addrs);
                         }
                     }
                 }
@@ -328,7 +388,7 @@ async fn resolve_target(target: &str) -> Result<SocketAddr, PairError> {
 
     let _ = daemon.shutdown();
     match found {
-        Ok(Some(addr)) => Ok(addr),
+        Ok(Some(addrs)) => Ok(addrs),
         _ => Err(PairError::TargetNotFound(target.to_string())),
     }
 }
@@ -429,5 +489,41 @@ mod tests {
         w.write_all(&len).await.unwrap();
         w.write_all(&buf).await.unwrap();
         w.flush().await.unwrap();
+    }
+
+    #[test]
+    fn drops_link_local_v6_and_orders_routable_first() {
+        let addrs: Vec<SocketAddr> = [
+            "[fe80::1]:47655",      // link-local v6 — unusable without a scope
+            "[::1]:47655",          // loopback v6
+            "192.168.178.34:47655", // routable v4
+            "127.0.0.1:47655",      // loopback v4
+            "[2606:4700::1]:47655", // global v6
+            "192.168.178.34:47655", // duplicate
+        ]
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+
+        let out = sorted_dialable(addrs);
+        assert_eq!(
+            out,
+            vec![
+                "192.168.178.34:47655".parse().unwrap(),
+                "[2606:4700::1]:47655".parse().unwrap(),
+                "127.0.0.1:47655".parse().unwrap(),
+                "[::1]:47655".parse().unwrap(),
+            ]
+        );
+    }
+
+    #[test]
+    fn is_dialable_rejects_link_local_and_unspecified() {
+        assert!(!is_dialable(&"fe80::abcd".parse().unwrap()));
+        assert!(!is_dialable(&"::".parse().unwrap()));
+        assert!(!is_dialable(&"0.0.0.0".parse().unwrap()));
+        assert!(is_dialable(&"169.254.1.2".parse().unwrap())); // v4 LL still has a route
+        assert!(is_dialable(&"10.0.0.5".parse().unwrap()));
+        assert!(is_dialable(&"fd00::1".parse().unwrap()));
     }
 }
