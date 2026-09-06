@@ -4,17 +4,19 @@ Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linu
 
 ## Status
 
-Milestone **M0** — project scaffold. The workspace builds two binaries that
-share a core library; all CLI subcommands are present but stubbed until their
-milestone lands (see [`MILESTONES.md`](MILESTONES.md)).
+Milestone **M1** — mDNS discovery + plaintext TCP transport. Two daemons on a
+LAN find each other, hold one connection per pair, exchange a `Hello`
+handshake, keepalive with `Ping`/`Pong`, and reconnect automatically. No
+encryption yet (M2). CLI subcommands past `peers` are still stubbed (see
+[`MILESTONES.md`](MILESTONES.md)).
 
 ## Layout
 
 | Crate | Kind | Role |
 | --- | --- | --- |
-| `crates/qdrop-core` | lib | config + peer registry + paths + logging |
+| `crates/qdrop-core` | lib | config, peer registry, paths, logging, wire protocol + framing, device id |
 | `crates/qdrop` | bin (`qdrop`) | command-line client |
-| `crates/qdropd` | bin (`qdropd`) | long-running daemon |
+| `crates/qdropd` | bin (`qdropd`) | daemon: mDNS discovery + transport |
 
 ## Build
 

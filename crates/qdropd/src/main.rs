@@ -1,11 +1,23 @@
 //! `qdropd` — the long-running daemon.
 //!
-//! M0 brings up the runtime, loads config, initializes logging, and waits
-//! for a shutdown signal. Discovery and transport land in M1.
+//! M1: advertise + browse `_qdrop._tcp` over mDNS, and hold one plaintext TCP
+//! connection per discovered peer (`Hello` handshake + `Ping`/`Pong`
+//! keepalive + reconnect). Encryption arrives in M2.
+
+mod backoff;
+mod connection;
+mod discovery;
+mod transport;
+
+use std::net::{Ipv4Addr, SocketAddr};
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use qdrop_core::proto::{Caps, Hello, PROTOCOL_VERSION};
 use qdrop_core::{Config, Peers};
+use tokio::net::TcpListener;
+
+use crate::transport::{TransportConfig, TransportEvent};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -43,11 +55,13 @@ fn real_main() -> Result<()> {
     let config = Config::load()?;
     qdrop_core::logging::init(args.verbose, &config.log_filter)?;
 
+    let device_id = qdrop_core::device::load_or_create()?;
     let port = args.port.unwrap_or(config.port);
     let peers = Peers::load()?;
 
     tracing::info!(
         version = qdrop_core::VERSION,
+        device_id = %device_id,
         device_name = %config.device_name,
         port,
         paired_peers = peers.peers.len(),
@@ -65,10 +79,56 @@ fn real_main() -> Result<()> {
         .context("building tokio runtime")?;
 
     runtime.block_on(async move {
-        // M1 will spawn discovery + transport tasks here.
-        tracing::info!("no work to do yet (discovery arrives in M1); waiting for shutdown signal");
+        let local = Hello {
+            protocol_version: PROTOCOL_VERSION,
+            device_id: device_id.clone(),
+            device_name: config.device_name.clone(),
+            // Advertise everything this build knows; real subsystems land in M3+.
+            caps: Caps::ALL,
+        };
+
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))
+            .await
+            .with_context(|| format!("binding TCP listener on port {port}"))?;
+        let bound_port = listener.local_addr()?.port();
+
+        let (discovery, discovery_rx) =
+            discovery::start(&device_id, &config.device_name, bound_port)
+                .context("starting mDNS discovery")?;
+
+        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<TransportEvent>(64);
+        let manager = transport::spawn(
+            TransportConfig::new(local),
+            listener,
+            discovery_rx,
+            Some(ev_tx),
+        );
+
+        tracing::info!(port = bound_port, "listening; advertising over mDNS");
+
+        let events = tokio::spawn(async move {
+            while let Some(ev) = ev_rx.recv().await {
+                match ev {
+                    TransportEvent::PeerConnected {
+                        device_id,
+                        device_name,
+                        caps,
+                    } => {
+                        tracing::info!(peer = %device_id, name = %device_name, caps = ?caps, "peer online");
+                    }
+                    TransportEvent::PeerDisconnected { device_id, reason } => {
+                        tracing::info!(peer = %device_id, %reason, "peer offline");
+                    }
+                }
+            }
+        });
+
         wait_for_shutdown().await;
         tracing::info!("shutdown signal received, stopping");
+
+        manager.abort();
+        events.abort();
+        discovery.shutdown();
         Ok(())
     })
 }

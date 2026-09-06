@@ -2,7 +2,7 @@
 
 mod cli;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use qdrop_core::{Config, Peers};
 
@@ -31,7 +31,50 @@ fn run() -> Result<()> {
         Command::Send(args) => cmd_send(&args),
         Command::Open(args) => cmd_open(&args),
         Command::Clip(args) => cmd_clip(&args.action),
-        Command::Daemon(_) => not_yet("daemon", "M1"),
+        Command::Daemon(args) => cmd_daemon(&args, cli.verbose),
+    }
+}
+
+/// `qdrop daemon` — thin front-end that runs the `qdropd` binary sitting next
+/// to this one. The daemon is a separate executable (it carries the mDNS and
+/// transport deps); this keeps one entrypoint for users and packaging (M8).
+fn cmd_daemon(args: &cli::DaemonArgs, verbose: bool) -> Result<()> {
+    use std::process::Command as Proc;
+
+    let exe = std::env::current_exe().context("locating the qdrop executable")?;
+    let qdropd = exe
+        .parent()
+        .map(|dir| {
+            dir.join(if cfg!(windows) {
+                "qdropd.exe"
+            } else {
+                "qdropd"
+            })
+        })
+        .filter(|p| p.exists())
+        .unwrap_or_else(|| std::path::PathBuf::from("qdropd"));
+
+    let mut cmd = Proc::new(&qdropd);
+    if verbose {
+        cmd.arg("--verbose");
+    }
+    if let Some(port) = args.port {
+        cmd.arg("--port").arg(port.to_string());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Replace this process so signals and the service manager see qdropd directly.
+        let err = cmd.exec();
+        Err(anyhow::Error::new(err).context(format!("exec {}", qdropd.display())))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = cmd
+            .status()
+            .with_context(|| format!("running {}", qdropd.display()))?;
+        std::process::exit(status.code().unwrap_or(1))
     }
 }
 

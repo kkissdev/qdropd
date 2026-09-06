@@ -15,6 +15,10 @@ serde.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+tokio = { workspace = true }
+rmp-serde.workspace = true
+fastrand.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }

@@ -107,7 +107,21 @@ the log level:
 
 ## What it does today
 
-M0 (scaffold): `qdropd` loads config, initializes logging, starts a tokio
-runtime, and waits for a shutdown signal. Discovery and transport land in M1;
-pairing and encryption in M2; clipboard and file sync in M3+. See
+M1 (discovery + transport):
+
+- Advertises `_qdrop._tcp.local.` over mDNS (TXT: device id, name, key
+  fingerprint) and browses for other daemons on the LAN.
+- Holds exactly **one** connection per peer. Arbitration: the daemon with the
+  lexicographically lower device id dials, the other only accepts.
+- `Hello` handshake exchanges protocol version + capabilities; the effective
+  capability set (logged on both sides) is the intersection.
+- `Ping`/`Pong` every 15s; a connection with no traffic for 45s is dropped.
+- The dialer reconnects automatically with exponential backoff (1s→60s, full
+  jitter). A clean peer disconnect reconnects almost immediately.
+
+Still to come: encryption and pairing (M2, the transport is **plaintext TCP**
+today), clipboard sync (M3), file transfer (M4+). See
 [`../MILESTONES.md`](../MILESTONES.md).
+
+The daemon writes a random device id to `~/.config/qdrop/device_id` on first
+run; delete that file to get a new identity.

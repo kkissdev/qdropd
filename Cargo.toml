@@ -19,6 +19,9 @@ toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "time", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rmp-serde = "1"
+mdns-sd = "0.21"
+fastrand = "2"
 
 qdrop-core = { path = "crates/qdrop-core" }
 
