@@ -4,7 +4,9 @@ mod cli;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use qdrop_core::{Config, Peers};
+use qdrop_core::pairing::{self, LocalInfo, Paired};
+use qdrop_core::state::{ago, DaemonState};
+use qdrop_core::{Config, Identity, Peer, Peers};
 
 use crate::cli::{Cli, ClipAction, Command};
 
@@ -27,7 +29,7 @@ fn run() -> Result<()> {
 
     match cli.command {
         Command::Peers(args) => cmd_peers(&args),
-        Command::Pair(args) => cmd_pair(&args),
+        Command::Pair(args) => cmd_pair(&args, cli.verbose),
         Command::Send(args) => cmd_send(&args),
         Command::Open(args) => cmd_open(&args),
         Command::Clip(args) => cmd_clip(&args.action),
@@ -78,24 +80,30 @@ fn cmd_daemon(args: &cli::DaemonArgs, verbose: bool) -> Result<()> {
     }
 }
 
-/// `qdrop peers` — reads `peers.toml` today; live status arrives with the
-/// control socket in M7.
+/// `qdrop peers` — paired peers plus live status from the daemon's
+/// `state.json` (online / last seen). A proper control socket arrives in M7.
 fn cmd_peers(args: &cli::PeersArgs) -> Result<()> {
     let peers = Peers::load()?;
+    let state = DaemonState::load().unwrap_or_default();
+
     if args.json {
-        // Minimal hand-rolled JSON keeps M0 free of a serde_json dependency.
-        let items: Vec<String> = peers
+        let rows: Vec<serde_json::Value> = peers
             .peers
             .iter()
             .map(|p| {
-                format!(
-                    r#"{{"name":{},"device_id":{},"online":false}}"#,
-                    json_str(&p.name),
-                    json_str(&p.device_id)
-                )
+                serde_json::json!({
+                    "name": p.name,
+                    "device_id": p.device_id,
+                    "public_key": p.public_key,
+                    "online": state.is_online(&p.device_id),
+                    "last_seen_unix": state
+                        .online
+                        .get(&p.device_id)
+                        .or_else(|| state.last_seen.get(&p.device_id)),
+                })
             })
             .collect();
-        println!("[{}]", items.join(","));
+        println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
 
@@ -103,23 +111,105 @@ fn cmd_peers(args: &cli::PeersArgs) -> Result<()> {
         println!("No paired peers. Run `qdrop pair` to add one.");
         return Ok(());
     }
-    println!("{:<20} {:<10} LAST SEEN", "NAME", "STATUS");
+    println!("{:<20} {:<9} LAST SEEN", "NAME", "STATUS");
     for p in &peers.peers {
-        println!(
-            "{:<20} {:<10} {}",
-            p.name,
-            "unknown",
-            p.last_seen.as_deref().unwrap_or("never")
-        );
+        let (status, when) = if let Some(since) = state.online.get(&p.device_id) {
+            ("online", format!("since {}", ago(*since)))
+        } else if let Some(seen) = state.last_seen.get(&p.device_id) {
+            ("offline", ago(*seen))
+        } else {
+            ("offline", "never".to_string())
+        };
+        println!("{:<20} {:<9} {}", p.name, status, when);
     }
     Ok(())
 }
 
-fn cmd_pair(args: &cli::PairArgs) -> Result<()> {
-    match (&args.remove, &args.target) {
-        (Some(name), _) => not_yet(&format!("pair --remove {name}"), "M2"),
-        (None, Some(target)) => not_yet(&format!("pair {target}"), "M2"),
-        (None, None) => not_yet("pair", "M2"),
+fn cmd_pair(args: &cli::PairArgs, verbose: bool) -> Result<()> {
+    if let Some(name) = &args.remove {
+        return cmd_unpair(name);
+    }
+
+    let config = Config::load()?;
+    let identity = Identity::load_or_create().context("loading identity key")?;
+    let device_id = qdrop_core::device::load_or_create()?;
+    let local = LocalInfo::new(&identity, &device_id, &config.device_name);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting async runtime")?;
+
+    let paired = match &args.target {
+        None => runtime.block_on(pairing::run_offer(local, |pin| {
+            println!("Pairing PIN: {pin}");
+            println!(
+                "On the other device, run:  qdrop pair {}",
+                shell_quote(&config.device_name)
+            );
+            println!("Waiting up to 60s for it to connect...");
+        }))?,
+        Some(target) => {
+            let pin = prompt_pin(target)?;
+            runtime.block_on(pairing::run_request(local, target, pin.trim()))?
+        }
+    };
+
+    record_peer(&paired)?;
+    if verbose {
+        tracing::debug!(?paired, "pairing complete");
+    }
+    println!(
+        "Paired with {} ({})",
+        paired.device_name,
+        qdrop_core::identity::fingerprint_of(&paired.public_key)
+    );
+    Ok(())
+}
+
+fn cmd_unpair(name: &str) -> Result<()> {
+    let mut peers = Peers::load()?;
+    if peers.remove_by_name(name) {
+        peers.save()?;
+        println!("Unpaired {name}.");
+        Ok(())
+    } else {
+        anyhow::bail!("no paired peer named {name:?}")
+    }
+}
+
+fn record_peer(paired: &Paired) -> Result<()> {
+    let mut peers = Peers::load()?;
+    peers.upsert(Peer::new(
+        &paired.device_name,
+        &paired.device_id,
+        &paired.public_key,
+    ));
+    peers.save()?;
+    Ok(())
+}
+
+fn prompt_pin(target: &str) -> Result<String> {
+    use std::io::{BufRead, Write};
+    print!("Enter the 6-digit PIN shown on {target}: ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("reading PIN from stdin")?;
+    let pin = line.trim();
+    if pin.len() != 6 || !pin.chars().all(|c| c.is_ascii_digit()) {
+        anyhow::bail!("expected a 6-digit PIN, got {pin:?}");
+    }
+    Ok(line)
+}
+
+fn shell_quote(s: &str) -> String {
+    if s.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c)) {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
     }
 }
 
@@ -148,22 +238,4 @@ fn cmd_clip(action: &ClipAction) -> Result<()> {
 
 fn not_yet(what: &str, milestone: &str) -> Result<()> {
     anyhow::bail!("`{what}` is not implemented yet (scheduled for {milestone})")
-}
-
-fn json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }

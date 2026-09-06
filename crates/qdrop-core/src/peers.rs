@@ -1,11 +1,10 @@
-//! `peers.toml` — the registry of paired devices.
-//!
-//! M0 only needs to read and write this file; pairing (which populates it)
-//! lands in M2.
+//! `peers.toml` — the registry of paired devices, written by `qdrop pair`.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use base64::engine::general_purpose::STANDARD_NO_PAD;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 /// A single paired peer.
@@ -21,6 +20,34 @@ pub struct Peer {
     /// Last successful contact, RFC 3339. `None` until first connect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+}
+
+impl Peer {
+    /// Build a peer entry from a raw public key.
+    pub fn new(
+        name: impl Into<String>,
+        device_id: impl Into<String>,
+        public_key: &[u8; 32],
+    ) -> Self {
+        Self {
+            name: name.into(),
+            device_id: device_id.into(),
+            public_key: STANDARD_NO_PAD.encode(public_key),
+            last_seen: None,
+        }
+    }
+
+    /// Decode the pinned public key.
+    pub fn key_bytes(&self) -> Result<[u8; 32]> {
+        let raw = STANDARD_NO_PAD
+            .decode(self.public_key.trim())
+            .with_context(|| format!("decoding public key for peer {}", self.name))?;
+        let arr: [u8; 32] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("public key for peer {} is not 32 bytes", self.name))?;
+        Ok(arr)
+    }
 }
 
 /// The whole `peers.toml` document.
@@ -48,20 +75,48 @@ impl Peers {
         }
     }
 
-    /// Write to a specific path, creating parent directories as needed.
+    /// Save to the default location, atomically.
+    pub fn save(&self) -> Result<()> {
+        self.save_to(crate::paths::peers_file()?)
+    }
+
+    /// Save to a specific path, atomically (temp file + rename).
     pub fn save_to(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
         let text = toml::to_string_pretty(self).context("serializing peers")?;
-        std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))
+        crate::paths::write_atomic(path.as_ref(), text.as_bytes())
     }
 
     /// Look up a peer by name.
     pub fn find(&self, name: &str) -> Option<&Peer> {
         self.peers.iter().find(|p| p.name == name)
+    }
+
+    /// Look up a peer by device id.
+    pub fn find_by_id(&self, device_id: &str) -> Option<&Peer> {
+        self.peers.iter().find(|p| p.device_id == device_id)
+    }
+
+    /// Insert `peer`, replacing any existing entry with the same `device_id`.
+    /// If the chosen name collides with a *different* device, the new entry's
+    /// name gets a short suffix so `--to <name>` stays unambiguous.
+    pub fn upsert(&mut self, mut peer: Peer) {
+        self.peers.retain(|p| p.device_id != peer.device_id);
+        if self
+            .peers
+            .iter()
+            .any(|p| p.name == peer.name && p.device_id != peer.device_id)
+        {
+            let suffix: String = peer.device_id.chars().take(6).collect();
+            peer.name = format!("{}-{}", peer.name, suffix);
+        }
+        self.peers.push(peer);
+    }
+
+    /// Remove the peer with this name. Returns whether one was removed.
+    pub fn remove_by_name(&mut self, name: &str) -> bool {
+        let before = self.peers.len();
+        self.peers.retain(|p| p.name != name);
+        self.peers.len() != before
     }
 
     pub fn is_empty(&self) -> bool {
@@ -80,23 +135,49 @@ mod tests {
     }
 
     #[test]
+    fn key_roundtrips_through_base64() {
+        let key = [7u8; 32];
+        let p = Peer::new("loki", "id1", &key);
+        assert_eq!(p.key_bytes().unwrap(), key);
+    }
+
+    #[test]
     fn roundtrips_through_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("peers.toml");
 
-        let peers = Peers {
-            peers: vec![Peer {
-                name: "loki".into(),
-                device_id: "01HXYZ".into(),
-                public_key: "abc123".into(),
-                last_seen: None,
-            }],
-        };
+        let mut peers = Peers::default();
+        peers.upsert(Peer::new("loki", "01HXYZ", &[1u8; 32]));
         peers.save_to(&path).unwrap();
 
         let back = Peers::load_from(&path).unwrap();
         assert_eq!(peers, back);
         assert_eq!(back.find("loki").unwrap().device_id, "01HXYZ");
-        assert!(back.find("thor").is_none());
+    }
+
+    #[test]
+    fn upsert_replaces_same_device_and_disambiguates_names() {
+        let mut peers = Peers::default();
+        peers.upsert(Peer::new("box", "aaa", &[1u8; 32]));
+        peers.upsert(Peer::new("box", "aaa", &[2u8; 32])); // same device, new key
+        assert_eq!(peers.peers.len(), 1);
+        assert_eq!(
+            peers.find_by_id("aaa").unwrap().key_bytes().unwrap(),
+            [2u8; 32]
+        );
+
+        peers.upsert(Peer::new("box", "bbbbbbbb", &[3u8; 32])); // different device, same name
+        assert_eq!(peers.peers.len(), 2);
+        assert!(peers.find("box").is_some());
+        assert!(peers.find("box-bbbbbb").is_some());
+    }
+
+    #[test]
+    fn remove_by_name() {
+        let mut peers = Peers::default();
+        peers.upsert(Peer::new("a", "ida", &[1u8; 32]));
+        assert!(peers.remove_by_name("a"));
+        assert!(!peers.remove_by_name("a"));
+        assert!(peers.is_empty());
     }
 }

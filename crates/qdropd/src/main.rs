@@ -1,21 +1,27 @@
 //! `qdropd` — the long-running daemon.
 //!
-//! M1: advertise + browse `_qdrop._tcp` over mDNS, and hold one plaintext TCP
-//! connection per discovered peer (`Hello` handshake + `Ping`/`Pong`
-//! keepalive + reconnect). Encryption arrives in M2.
+//! M2: mutually-authenticated TLS 1.3 with keys pinned during pairing. Only
+//! peers in `peers.toml` are dialed or accepted; the roster is reloaded when
+//! that file changes, so `qdrop pair` / `qdrop pair --remove` take effect
+//! without a restart.
 
 mod backoff;
 mod connection;
 mod discovery;
+mod secure;
+mod state;
 mod transport;
 
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use qdrop_core::proto::{Caps, Hello, PROTOCOL_VERSION};
-use qdrop_core::{Config, Peers};
+use qdrop_core::{Config, Identity, Peers, Roster};
 use tokio::net::TcpListener;
+use tokio::sync::watch;
 
 use crate::transport::{TransportConfig, TransportEvent};
 
@@ -56,6 +62,7 @@ fn real_main() -> Result<()> {
     qdrop_core::logging::init(args.verbose, &config.log_filter)?;
 
     let device_id = qdrop_core::device::load_or_create()?;
+    let identity = Arc::new(Identity::load_or_create().context("loading identity key")?);
     let port = args.port.unwrap_or(config.port);
     let peers = Peers::load()?;
 
@@ -63,6 +70,7 @@ fn real_main() -> Result<()> {
         version = qdrop_core::VERSION,
         device_id = %device_id,
         device_name = %config.device_name,
+        fingerprint = %identity.fingerprint(),
         port,
         paired_peers = peers.peers.len(),
         "qdropd starting"
@@ -83,9 +91,12 @@ fn real_main() -> Result<()> {
             protocol_version: PROTOCOL_VERSION,
             device_id: device_id.clone(),
             device_name: config.device_name.clone(),
-            // Advertise everything this build knows; real subsystems land in M3+.
             caps: Caps::ALL,
         };
+
+        let roster = Roster::from_peers(&peers);
+        let server_config = qdrop_core::tls::server_config(&identity, roster.clone())
+            .context("building TLS server config")?;
 
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, port)))
             .await
@@ -96,32 +107,24 @@ fn real_main() -> Result<()> {
             discovery::start(&device_id, &config.device_name, bound_port)
                 .context("starting mDNS discovery")?;
 
-        let (ev_tx, mut ev_rx) = tokio::sync::mpsc::channel::<TransportEvent>(64);
+        let (roster_tx, roster_rx) = watch::channel(());
+        spawn_roster_reload(roster.clone(), roster_tx);
+
+        let (ev_tx, ev_rx) = tokio::sync::mpsc::channel::<TransportEvent>(64);
         let manager = transport::spawn(
-            TransportConfig::new(local),
+            TransportConfig::new(local, identity.clone(), roster, server_config),
             listener,
             discovery_rx,
+            roster_rx,
             Some(ev_tx),
         );
 
-        tracing::info!(port = bound_port, "listening; advertising over mDNS");
+        tracing::info!(
+            port = bound_port,
+            "listening; advertising over mDNS (TLS 1.3, pinned keys)"
+        );
 
-        let events = tokio::spawn(async move {
-            while let Some(ev) = ev_rx.recv().await {
-                match ev {
-                    TransportEvent::PeerConnected {
-                        device_id,
-                        device_name,
-                        caps,
-                    } => {
-                        tracing::info!(peer = %device_id, name = %device_name, caps = ?caps, "peer online");
-                    }
-                    TransportEvent::PeerDisconnected { device_id, reason } => {
-                        tracing::info!(peer = %device_id, %reason, "peer offline");
-                    }
-                }
-            }
-        });
+        let events = tokio::spawn(state::publish_events(ev_rx));
 
         wait_for_shutdown().await;
         tracing::info!("shutdown signal received, stopping");
@@ -131,6 +134,41 @@ fn real_main() -> Result<()> {
         discovery.shutdown();
         Ok(())
     })
+}
+
+/// Poll `peers.toml` and refresh the shared roster when it changes.
+fn spawn_roster_reload(roster: Roster, notify: watch::Sender<()>) {
+    tokio::spawn(async move {
+        let path = match qdrop_core::paths::peers_file() {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+        let mut last = mtime(&path);
+        let mut tick = tokio::time::interval(Duration::from_secs(3));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let now = mtime(&path);
+            if now != last {
+                last = now;
+                match Peers::load_from(&path) {
+                    Ok(peers) => {
+                        roster.load(&peers);
+                        tracing::info!(
+                            peers = peers.peers.len(),
+                            "roster reloaded from peers.toml"
+                        );
+                        let _ = notify.send(());
+                    }
+                    Err(e) => tracing::warn!("reloading peers.toml failed: {e:#}"),
+                }
+            }
+        }
+    });
+}
+
+fn mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 #[cfg(unix)]

@@ -4,19 +4,30 @@ Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linu
 
 ## Status
 
-Milestone **M1** — mDNS discovery + plaintext TCP transport. Two daemons on a
-LAN find each other, hold one connection per pair, exchange a `Hello`
-handshake, keepalive with `Ping`/`Pong`, and reconnect automatically. No
-encryption yet (M2). CLI subcommands past `peers` are still stubbed (see
-[`MILESTONES.md`](MILESTONES.md)).
+Milestone **M2** — pairing + authenticated transport. `qdrop pair` establishes
+trust once via a 6-digit PIN (SPAKE2); every connection after that is TLS 1.3
+with the peer's Ed25519 key pinned (no CA, no TOFU). Unknown keys are refused;
+`qdrop pair --remove` unpairs. `qdrop peers` shows online / last-seen. Clipboard
+and file sync are still ahead (see [`MILESTONES.md`](MILESTONES.md)).
 
 ## Layout
 
 | Crate | Kind | Role |
 | --- | --- | --- |
-| `crates/qdrop-core` | lib | config, peer registry, paths, logging, wire protocol + framing, device id |
-| `crates/qdrop` | bin (`qdrop`) | command-line client |
-| `crates/qdropd` | bin (`qdropd`) | daemon: mDNS discovery + transport |
+| `crates/qdrop-core` | lib | config, peers/roster, identity + pinned TLS, PIN pairing, wire protocol, logging |
+| `crates/qdrop` | bin (`qdrop`) | command-line client (`pair`, `peers`, …) |
+| `crates/qdropd` | bin (`qdropd`) | daemon: discovery + authenticated transport |
+
+## Pairing
+
+```bash
+# on device A
+qdrop pair                 # prints a PIN, waits 60s
+# on device B
+qdrop pair alpha           # or: qdrop pair 192.168.1.50 — prompts for the PIN
+```
+
+Then start `qdropd` on both. `qdrop pair --remove <name>` unpairs.
 
 ## Build
 

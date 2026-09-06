@@ -107,21 +107,30 @@ the log level:
 
 ## What it does today
 
-M1 (discovery + transport):
+Through M2 (discovery + authenticated transport):
 
-- Advertises `_qdrop._tcp.local.` over mDNS (TXT: device id, name, key
-  fingerprint) and browses for other daemons on the LAN.
-- Holds exactly **one** connection per peer. Arbitration: the daemon with the
-  lexicographically lower device id dials, the other only accepts.
-- `Hello` handshake exchanges protocol version + capabilities; the effective
-  capability set (logged on both sides) is the intersection.
-- `Ping`/`Pong` every 15s; a connection with no traffic for 45s is dropped.
-- The dialer reconnects automatically with exponential backoff (1s→60s, full
-  jitter). A clean peer disconnect reconnects almost immediately.
+- Advertises `_qdrop._tcp.local.` over mDNS and browses for other daemons.
+- Talks **only to paired peers**. `qdrop pair` establishes trust once (SPAKE2
+  keyed by a 6-digit PIN); after that every connection is **TLS 1.3 with the
+  peer's Ed25519 key pinned** — no CA, no trust-on-first-use. A connection
+  from an unknown key is refused.
+- One connection per peer; the lower device id dials, the other accepts.
+- `Hello` handshake negotiates protocol version + capabilities (intersection
+  logged on both sides); `Ping`/`Pong` every 15s, 45s idle timeout; automatic
+  reconnect with exponential backoff (1s→60s, full jitter).
+- Watches `peers.toml` and reloads the trust roster within a few seconds, so
+  pairing or unpairing takes effect without restarting the daemon.
+- Publishes connection status to `~/.config/qdrop/state.json` for
+  `qdrop peers`.
 
-Still to come: encryption and pairing (M2, the transport is **plaintext TCP**
-today), clipboard sync (M3), file transfer (M4+). See
+Files under `~/.config/qdrop/`:
+
+| File | Written by | Purpose |
+| --- | --- | --- |
+| `identity.pem` | daemon / CLI, first run | long-term Ed25519 key (mode 0600) |
+| `device_id` | daemon, first run | stable id for mDNS + dial arbitration |
+| `peers.toml` | `qdrop pair` | pinned peer keys |
+| `state.json` | daemon | live online / last-seen status |
+
+Still to come: clipboard sync (M3), file transfer (M4+). See
 [`../MILESTONES.md`](../MILESTONES.md).
-
-The daemon writes a random device id to `~/.config/qdrop/device_id` on first
-run; delete that file to get a new identity.

@@ -1,17 +1,20 @@
-//! Connection manager: turns discovery events into exactly one live
-//! connection per peer.
+//! Connection manager: turns discovery events into exactly one live,
+//! TLS-authenticated connection per *paired* peer.
 //!
 //! Arbitration: the device with the lexicographically **lower** id dials; the
-//! other only accepts. Since just one side ever dials, there is naturally one
-//! connection per pair. The dialer owns a reconnect loop with exponential
-//! backoff; the acceptor waits for inbound and replaces a stale connection
-//! when a fresh one arrives.
+//! other only accepts. Only peers in the roster (paired in M2) are dialed,
+//! and inbound TLS from an unpinned key is refused by the verifier. The
+//! roster can change at runtime (pair / unpair) without a restart.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
+use qdrop_core::identity::Identity;
 use qdrop_core::proto::{Caps, Hello};
+use qdrop_core::roster::Roster;
+use rustls::ServerConfig;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -19,7 +22,8 @@ use tokio::time::timeout;
 
 use crate::backoff::Backoff;
 use crate::connection::{self, handshake, DisconnectReason, KeepAlive};
-use crate::discovery::DiscoveryEvent;
+use crate::discovery::{DiscoveredPeer, DiscoveryEvent};
+use crate::secure;
 
 /// Observability hook — one event per connection state change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,11 +39,14 @@ pub enum TransportEvent {
     },
 }
 
-/// Tuning for the manager and its connections.
-#[derive(Debug, Clone)]
+/// Tuning + shared state for the manager.
+#[derive(Clone)]
 pub struct TransportConfig {
     /// Our own `Hello` (identity + advertised caps).
     pub local: Hello,
+    pub identity: Arc<Identity>,
+    pub roster: Roster,
+    pub server_config: Arc<ServerConfig>,
     pub keepalive: KeepAlive,
     pub backoff_base: Duration,
     pub backoff_max: Duration,
@@ -47,9 +54,17 @@ pub struct TransportConfig {
 }
 
 impl TransportConfig {
-    pub fn new(local: Hello) -> Self {
+    pub fn new(
+        local: Hello,
+        identity: Arc<Identity>,
+        roster: Roster,
+        server_config: Arc<ServerConfig>,
+    ) -> Self {
         Self {
             local,
+            identity,
+            roster,
+            server_config,
             keepalive: KeepAlive::default(),
             backoff_base: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
@@ -58,14 +73,23 @@ impl TransportConfig {
     }
 }
 
+/// A watch receiver whose sender is already gone, so `changed()` returns
+/// immediately and the roster-reload path stays dormant (used in tests).
+#[cfg(test)]
+fn never() -> watch::Receiver<()> {
+    watch::channel(()).1
+}
+
 /// Start the manager. Abort the returned handle (or drop the runtime) to stop.
+/// `roster_changed` fires after the shared roster is reloaded from disk.
 pub fn spawn(
     cfg: TransportConfig,
     listener: TcpListener,
     discovery_rx: mpsc::Receiver<DiscoveryEvent>,
+    roster_changed: watch::Receiver<()>,
     events: Option<mpsc::Sender<TransportEvent>>,
 ) -> JoinHandle<()> {
-    tokio::spawn(manager(cfg, listener, discovery_rx, events))
+    tokio::spawn(manager(cfg, listener, discovery_rx, roster_changed, events))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,19 +109,17 @@ fn role_for(own_id: &str, peer_id: &str) -> Role {
 /// Messages folded into the manager's single processing loop.
 enum Internal {
     Discovery(DiscoveryEvent),
-    /// An inbound connection cleared its handshake.
+    RosterChanged,
     InboundReady {
         peer: Hello,
         caps: Caps,
-        stream: TcpStream,
+        stream: Box<secure::SecureStream>,
     },
-    /// A connection (either role) became live.
     ConnUp {
         peer_id: String,
         device_name: String,
         caps: Caps,
     },
-    /// A connection ended.
     ConnDown {
         peer_id: String,
         reason: DisconnectReason,
@@ -130,59 +152,70 @@ async fn manager(
     cfg: TransportConfig,
     listener: TcpListener,
     discovery_rx: mpsc::Receiver<DiscoveryEvent>,
+    roster_changed: watch::Receiver<()>,
     events: Option<mpsc::Sender<TransportEvent>>,
 ) {
     let own_id = cfg.local.device_id.clone();
     let (internal_tx, mut internal_rx) = mpsc::channel::<Internal>(64);
 
-    spawn_accept_loop(
-        listener,
-        cfg.local.clone(),
-        cfg.keepalive,
-        internal_tx.clone(),
-    );
+    spawn_accept_loop(listener, cfg.clone(), internal_tx.clone());
     spawn_discovery_forwarder(discovery_rx, internal_tx.clone());
+    spawn_roster_watcher(roster_changed, internal_tx.clone());
 
     let mut peers: HashMap<String, PeerEntry> = HashMap::new();
+    // Everything mDNS has told us about, trusted or not, so we can start
+    // dialing immediately when a peer becomes trusted.
+    let mut discovered: HashMap<String, DiscoveredPeer> = HashMap::new();
 
     while let Some(msg) = internal_rx.recv().await {
         match msg {
             Internal::Discovery(DiscoveryEvent::Found(p)) => {
-                let role = role_for(&own_id, &p.device_id);
-                let entry = peers
-                    .entry(p.device_id.clone())
-                    .or_insert_with(|| PeerEntry::new(role));
-                entry.device_name = p.device_name.clone();
-
-                match role {
-                    Role::Dialer => {
-                        if let Some(tx) = &entry.addrs_tx {
-                            let _ = tx.send(p.addrs.clone());
-                        } else {
-                            let (tx, rx) = watch::channel(p.addrs.clone());
-                            entry.addrs_tx = Some(tx);
-                            let task = tokio::spawn(dial_loop(
-                                p.device_id.clone(),
-                                cfg.clone(),
-                                rx,
-                                internal_tx.clone(),
-                            ));
-                            entry.task = Some(task);
-                            tracing::info!(peer = %p.device_id, name = %p.device_name, "discovered peer (we dial)");
-                        }
-                    }
-                    Role::Acceptor => {
-                        tracing::info!(peer = %p.device_id, name = %p.device_name, "discovered peer (we accept)");
+                discovered.insert(p.device_id.clone(), p.clone());
+                if !cfg.roster.read().is_trusted_id(&p.device_id) {
+                    tracing::debug!(peer = %p.device_id, "ignoring unpaired peer");
+                    continue;
+                }
+                ensure_peer(&cfg, &own_id, &internal_tx, &mut peers, &p);
+            }
+            Internal::Discovery(DiscoveryEvent::Lost { device_id }) => {
+                discovered.remove(&device_id);
+                if let Some(entry) = peers.get_mut(&device_id) {
+                    tracing::info!(peer = %device_id, "peer lost from mDNS");
+                    if let Some(tx) = &entry.addrs_tx {
+                        let _ = tx.send(Vec::new());
                     }
                 }
             }
-            Internal::Discovery(DiscoveryEvent::Lost { device_id }) => {
-                if let Some(entry) = peers.get_mut(&device_id) {
-                    tracing::info!(peer = %device_id, "peer lost from mDNS");
-                    // Pause the reconnect loop but leave a live connection alone
-                    // until keepalive proves it dead.
-                    if let Some(tx) = &entry.addrs_tx {
-                        let _ = tx.send(Vec::new());
+            Internal::RosterChanged => {
+                // Drop connections to peers that are no longer trusted.
+                let trusted = cfg.roster.read().ids();
+                let dropped: Vec<String> = peers
+                    .keys()
+                    .filter(|id| !trusted.contains(id))
+                    .cloned()
+                    .collect();
+                for id in dropped {
+                    if let Some(mut entry) = peers.remove(&id) {
+                        if let Some(t) = entry.task.take() {
+                            t.abort();
+                        }
+                        if entry.connected {
+                            emit(
+                                &events,
+                                TransportEvent::PeerDisconnected {
+                                    device_id: id.clone(),
+                                    reason: "peer unpaired".into(),
+                                },
+                            )
+                            .await;
+                        }
+                        tracing::info!(peer = %id, "dropped connection: peer unpaired");
+                    }
+                }
+                // Start dialing peers that just became trusted.
+                for p in discovered.values().cloned().collect::<Vec<_>>() {
+                    if cfg.roster.read().is_trusted_id(&p.device_id) {
+                        ensure_peer(&cfg, &own_id, &internal_tx, &mut peers, &p);
                     }
                 }
             }
@@ -275,34 +308,94 @@ async fn manager(
     }
 }
 
+/// Ensure a dial loop exists (or its address book is refreshed) for a trusted,
+/// discovered peer we are the dialer for.
+fn ensure_peer(
+    cfg: &TransportConfig,
+    own_id: &str,
+    internal_tx: &mpsc::Sender<Internal>,
+    peers: &mut HashMap<String, PeerEntry>,
+    p: &DiscoveredPeer,
+) {
+    let role = role_for(own_id, &p.device_id);
+    let entry = peers
+        .entry(p.device_id.clone())
+        .or_insert_with(|| PeerEntry::new(role));
+    entry.device_name = p.device_name.clone();
+
+    match role {
+        Role::Dialer => {
+            if let Some(tx) = &entry.addrs_tx {
+                let _ = tx.send(p.addrs.clone());
+            } else {
+                let (tx, rx) = watch::channel(p.addrs.clone());
+                entry.addrs_tx = Some(tx);
+                entry.task = Some(tokio::spawn(dial_loop(
+                    p.device_id.clone(),
+                    cfg.clone(),
+                    rx,
+                    internal_tx.clone(),
+                )));
+                tracing::info!(peer = %p.device_id, name = %p.device_name, "discovered paired peer (we dial)");
+            }
+        }
+        Role::Acceptor => {
+            tracing::info!(peer = %p.device_id, name = %p.device_name, "discovered paired peer (we accept)");
+        }
+    }
+}
+
 fn spawn_accept_loop(
     listener: TcpListener,
-    local: Hello,
-    ka: KeepAlive,
+    cfg: TransportConfig,
     internal_tx: mpsc::Sender<Internal>,
 ) {
     tokio::spawn(async move {
         loop {
             match listener.accept().await {
-                Ok((stream, addr)) => {
-                    let _ = stream.set_nodelay(true);
-                    let local = local.clone();
+                Ok((tcp, addr)) => {
+                    let _ = tcp.set_nodelay(true);
+                    let cfg = cfg.clone();
                     let internal_tx = internal_tx.clone();
                     tokio::spawn(async move {
-                        let mut stream = stream;
-                        match handshake(&mut stream, &local, None, ka.handshake_timeout).await {
+                        let ka = cfg.keepalive;
+                        let (mut stream, key) = match secure::accept(
+                            tcp,
+                            cfg.server_config.clone(),
+                            &cfg.roster,
+                            ka.handshake_timeout,
+                        )
+                        .await
+                        {
+                            Ok(v) => v,
+                            Err(e) => {
+                                tracing::debug!(%addr, "inbound TLS rejected: {e:#}");
+                                return;
+                            }
+                        };
+                        let expect_id = cfg
+                            .roster
+                            .read()
+                            .peer_for_key(&key)
+                            .map(|p| p.device_id.clone());
+                        match handshake(
+                            &mut stream,
+                            &cfg.local,
+                            expect_id.as_deref(),
+                            ka.handshake_timeout,
+                        )
+                        .await
+                        {
                             Ok(hs) => {
                                 let _ = internal_tx
                                     .send(Internal::InboundReady {
                                         peer: hs.peer,
                                         caps: hs.effective_caps,
-                                        stream,
+                                        stream: Box::new(stream),
                                     })
                                     .await;
                             }
-                            Err(e) => {
-                                tracing::debug!(%addr, "inbound handshake failed: {e}");
-                            }
+                            Err(e) => tracing::debug!(%addr, "inbound handshake failed: {e}"),
                         }
                     });
                 }
@@ -328,6 +421,19 @@ fn spawn_discovery_forwarder(
     });
 }
 
+fn spawn_roster_watcher(
+    mut roster_changed: watch::Receiver<()>,
+    internal_tx: mpsc::Sender<Internal>,
+) {
+    tokio::spawn(async move {
+        while roster_changed.changed().await.is_ok() {
+            if internal_tx.send(Internal::RosterChanged).await.is_err() {
+                break;
+            }
+        }
+    });
+}
+
 /// The dialer's connect/keepalive/reconnect loop for one peer.
 async fn dial_loop(
     peer_id: String,
@@ -339,17 +445,19 @@ async fn dial_loop(
 
     loop {
         let addrs = addrs_rx.borrow_and_update().clone();
-        if addrs.is_empty() {
-            if addrs_rx.changed().await.is_err() {
-                return;
+        let expect = cfg.roster.read().key_for_id(&peer_id);
+        match (addrs.is_empty(), expect) {
+            (false, Some(expect)) => {
+                if dial_once(&addrs, expect, &peer_id, &cfg, &internal_tx).await {
+                    backoff.reset();
+                }
             }
-            continue;
-        }
-
-        let established = dial_once(&addrs, &peer_id, &cfg, &internal_tx).await;
-        if established {
-            // The connection ran and dropped; try to restore it promptly.
-            backoff.reset();
+            _ => {
+                if addrs_rx.changed().await.is_err() {
+                    return;
+                }
+                continue;
+            }
         }
 
         let delay = backoff.next_delay();
@@ -366,15 +474,16 @@ async fn dial_loop(
 }
 
 /// One pass over a peer's candidate addresses. Returns `true` if a connection
-/// was established (and has since ended), `false` if none could be made.
+/// was established (and has since ended).
 async fn dial_once(
     addrs: &[SocketAddr],
+    expect: [u8; 32],
     peer_id: &str,
     cfg: &TransportConfig,
     internal_tx: &mpsc::Sender<Internal>,
 ) -> bool {
     for &addr in addrs {
-        let stream = match timeout(cfg.connect_timeout, TcpStream::connect(addr)).await {
+        let tcp = match timeout(cfg.connect_timeout, TcpStream::connect(addr)).await {
             Ok(Ok(s)) => s,
             Ok(Err(e)) => {
                 tracing::debug!(peer = %peer_id, %addr, "connect failed: {e}");
@@ -385,8 +494,22 @@ async fn dial_once(
                 continue;
             }
         };
-        let _ = stream.set_nodelay(true);
-        let mut stream = stream;
+        let _ = tcp.set_nodelay(true);
+
+        let mut stream = match secure::connect(
+            tcp,
+            &cfg.identity,
+            expect,
+            cfg.keepalive.handshake_timeout,
+        )
+        .await
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(peer = %peer_id, %addr, "TLS handshake failed: {e:#}");
+                continue;
+            }
+        };
 
         let hs = match handshake(
             &mut stream,
@@ -432,6 +555,8 @@ async fn emit(events: &Option<mpsc::Sender<TransportEvent>>, ev: TransportEvent)
 mod tests {
     use super::*;
     use qdrop_core::proto::PROTOCOL_VERSION;
+    use qdrop_core::{Peer, Peers};
+    use std::path::Path;
 
     fn hello(id: &str) -> Hello {
         Hello {
@@ -442,18 +567,34 @@ mod tests {
         }
     }
 
-    fn fast_cfg(local: Hello) -> TransportConfig {
+    fn identity_at(dir: &Path, name: &str) -> Arc<Identity> {
+        Arc::new(Identity::load_or_create_at(dir.join(name)).unwrap())
+    }
+
+    fn fast_cfg(local: Hello, identity: Arc<Identity>, roster: Roster) -> TransportConfig {
+        let server_config = qdrop_core::tls::server_config(&identity, roster.clone()).unwrap();
         TransportConfig {
             local,
+            identity,
+            roster,
+            server_config,
             keepalive: KeepAlive {
-                interval: Duration::from_millis(100),
-                idle_timeout: Duration::from_millis(500),
-                handshake_timeout: Duration::from_secs(2),
+                interval: Duration::from_millis(120),
+                idle_timeout: Duration::from_millis(600),
+                handshake_timeout: Duration::from_secs(3),
             },
             backoff_base: Duration::from_millis(20),
-            backoff_max: Duration::from_millis(100),
-            connect_timeout: Duration::from_secs(1),
+            backoff_max: Duration::from_millis(120),
+            connect_timeout: Duration::from_secs(2),
         }
+    }
+
+    fn roster_of(peers: &[(&str, &Identity)]) -> Roster {
+        let mut doc = Peers::default();
+        for (id, ident) in peers {
+            doc.upsert(Peer::new(format!("name-{id}"), *id, &ident.public_key()));
+        }
+        Roster::from_peers(&doc)
     }
 
     #[test]
@@ -462,120 +603,104 @@ mod tests {
         assert_eq!(role_for("ffff", "aaaa"), Role::Acceptor);
     }
 
-    // As the low id, the manager should dial the discovered peer, and it
-    // should re-dial after the connection drops.
+    const LOW: &str = "aaaa0000000000000000000000000000";
+    const HIGH: &str = "ffff1111111111111111111111111111";
+
+    // The low-id side dials a paired peer over TLS, and re-dials after a drop.
     #[tokio::test]
-    async fn dialer_connects_and_reconnects() {
+    async fn dialer_connects_over_tls_and_reconnects() {
+        let dir = tempfile::tempdir().unwrap();
+        let us = identity_at(dir.path(), "us.pem");
+        let them = identity_at(dir.path(), "them.pem");
+
+        // Peer side: a TLS server that trusts us.
+        let peer_roster = roster_of(&[(LOW, &us)]);
+        let peer_server = qdrop_core::tls::server_config(&them, peer_roster.clone()).unwrap();
         let peer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let peer_addr = peer_listener.local_addr().unwrap();
 
-        let own = hello("aaaa0000000000000000000000000000");
-        let cfg = fast_cfg(own);
-
+        let our_roster = roster_of(&[(HIGH, &them)]);
+        let cfg = fast_cfg(hello(LOW), us.clone(), our_roster);
         let our_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (disco_tx, disco_rx) = mpsc::channel(8);
         let (ev_tx, mut ev_rx) = mpsc::channel(16);
-        let mgr = spawn(cfg, our_listener, disco_rx, Some(ev_tx));
+        let mgr = spawn(cfg, our_listener, disco_rx, never(), Some(ev_tx));
 
         disco_tx
-            .send(DiscoveryEvent::Found(crate::discovery::DiscoveredPeer {
-                device_id: "ffff1111111111111111111111111111".into(),
+            .send(DiscoveryEvent::Found(DiscoveredPeer {
+                device_id: HIGH.into(),
                 device_name: "peer".into(),
-                fingerprint: "ffff1111111111111111111111111111".into(),
+                fingerprint: "fp".into(),
                 addrs: vec![peer_addr],
             }))
             .await
             .unwrap();
 
         for round in 0..2 {
-            let (mut sock, _) = peer_listener.accept().await.unwrap();
-            let peer_hello = hello("ffff1111111111111111111111111111");
-            let hs = handshake(&mut sock, &peer_hello, None, Duration::from_secs(2))
+            let (tcp, _) = peer_listener.accept().await.unwrap();
+            let acceptor = tokio_rustls::TlsAcceptor::from(peer_server.clone());
+            let mut tls = secure::SecureStream::from(acceptor.accept(tcp).await.unwrap());
+            let peer_hello = hello(HIGH);
+            let hs = handshake(&mut tls, &peer_hello, Some(LOW), Duration::from_secs(3))
                 .await
                 .unwrap();
-            assert_eq!(hs.peer.device_id, "aaaa0000000000000000000000000000");
+            assert_eq!(hs.peer.device_id, LOW);
 
-            match tokio::time::timeout(Duration::from_secs(2), ev_rx.recv())
+            match tokio::time::timeout(Duration::from_secs(3), ev_rx.recv())
                 .await
                 .unwrap()
                 .unwrap()
             {
-                TransportEvent::PeerConnected { device_id, .. } => {
-                    assert_eq!(device_id, "ffff1111111111111111111111111111");
-                }
+                TransportEvent::PeerConnected { device_id, .. } => assert_eq!(device_id, HIGH),
                 other => panic!("round {round}: expected connect, got {other:?}"),
             }
 
-            // Drop the peer socket to force a disconnect + reconnect.
-            drop(sock);
-            match tokio::time::timeout(Duration::from_secs(2), ev_rx.recv())
+            drop(tls);
+            match tokio::time::timeout(Duration::from_secs(3), ev_rx.recv())
                 .await
                 .unwrap()
                 .unwrap()
             {
-                TransportEvent::PeerDisconnected { device_id, .. } => {
-                    assert_eq!(device_id, "ffff1111111111111111111111111111");
-                }
+                TransportEvent::PeerDisconnected { device_id, .. } => assert_eq!(device_id, HIGH),
                 other => panic!("round {round}: expected disconnect, got {other:?}"),
             }
         }
-
         mgr.abort();
     }
 
-    // As the high id, the manager must NOT dial; it accepts an inbound
-    // connection instead.
+    // An unpaired peer discovered over mDNS is never dialed.
     #[tokio::test]
-    async fn acceptor_does_not_dial_but_accepts_inbound() {
+    async fn unpaired_peer_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let us = identity_at(dir.path(), "us.pem");
+        let them = identity_at(dir.path(), "them.pem");
+
         let unused = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let unused_addr = unused.local_addr().unwrap();
 
-        let own = hello("ffff2222222222222222222222222222");
-        let cfg = fast_cfg(own);
+        // Empty roster: nobody is trusted.
+        let cfg = fast_cfg(hello(LOW), us.clone(), Roster::new());
         let our_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let our_addr = our_listener.local_addr().unwrap();
-
         let (disco_tx, disco_rx) = mpsc::channel(8);
-        let (ev_tx, mut ev_rx) = mpsc::channel(16);
-        let mgr = spawn(cfg, our_listener, disco_rx, Some(ev_tx));
+        let mgr = spawn(cfg, our_listener, disco_rx, never(), None);
 
         disco_tx
-            .send(DiscoveryEvent::Found(crate::discovery::DiscoveredPeer {
-                device_id: "aaaa3333333333333333333333333333".into(),
-                device_name: "peer".into(),
-                fingerprint: "aaaa3333333333333333333333333333".into(),
+            .send(DiscoveryEvent::Found(DiscoveredPeer {
+                device_id: HIGH.into(),
+                device_name: "stranger".into(),
+                fingerprint: "fp".into(),
                 addrs: vec![unused_addr],
             }))
             .await
             .unwrap();
 
-        // It must not dial the discovered address.
         assert!(
-            tokio::time::timeout(Duration::from_millis(300), unused.accept())
+            tokio::time::timeout(Duration::from_millis(400), unused.accept())
                 .await
                 .is_err(),
-            "acceptor should not have dialed"
+            "must not dial an unpaired peer"
         );
-
-        // Now connect to it ourselves, as the lower-id peer would.
-        let mut sock = TcpStream::connect(our_addr).await.unwrap();
-        let peer_hello = hello("aaaa3333333333333333333333333333");
-        handshake(&mut sock, &peer_hello, None, Duration::from_secs(2))
-            .await
-            .unwrap();
-
-        match tokio::time::timeout(Duration::from_secs(2), ev_rx.recv())
-            .await
-            .unwrap()
-            .unwrap()
-        {
-            TransportEvent::PeerConnected { device_id, .. } => {
-                assert_eq!(device_id, "aaaa3333333333333333333333333333");
-            }
-            other => panic!("expected connect, got {other:?}"),
-        }
-
-        drop(sock);
+        let _ = them;
         mgr.abort();
     }
 }

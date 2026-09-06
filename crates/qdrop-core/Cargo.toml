@@ -18,7 +18,18 @@ tracing-subscriber.workspace = true
 tokio = { workspace = true }
 rmp-serde.workspace = true
 fastrand.workspace = true
+serde_json.workspace = true
+spake2.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+x509-parser.workspace = true
+rcgen.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+mdns-sd.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt", "io-util", "net", "time"] }
