@@ -2,7 +2,7 @@
 
 Derived from [`qdropdesign.md`](qdropdesign.md). Each milestone is independently
 demoable and ordered so the daily-driver cut (M1–M6) lands first, with hardening
-and polish after.
+and polish after. M0–M9 are implemented; M10–M11 are planned.
 
 ---
 
@@ -221,9 +221,67 @@ logs a notice.
 
 ---
 
+## M11 — Beyond the LAN (static endpoints + relay)
+
+**Goal:** Reach a paired device that isn't on the same network — a laptop on
+hotel Wi-Fi, a box at another site — without weakening anything.
+
+The M2 handshake is already end-to-end (pinned Ed25519 keys, mutual TLS 1.3),
+so **every path added here is untrusted plumbing**: a router, a VPN, or a relay
+can move bytes but cannot read them or join a session.
+
+### Static endpoints (no infrastructure)
+
+- `peers.toml` entry gains an optional `endpoint = "host:port"` (also
+  `qdrop endpoint <name> <host:port>` / `qdrop endpoint --clear <name>`).
+- Dial order becomes: cached last-known addr → mDNS-discovered addrs →
+  static endpoint. The static endpoint covers a manual router port-forward, a
+  DNS name, or a mesh VPN address (Tailscale / WireGuard / Nebula).
+- `qdrop pair <host:port>` works over the internet too (SPAKE2 doesn't care
+  about the transport), so first-contact across networks needs no LAN moment.
+
+### Relay (works behind two NATs, no port-forward)
+
+- Optional `qdrop-relay` server (a tiny binary; run one yourself, or point at a
+  shared one). Both peers make an **outbound** TLS/WebSocket connection to it on
+  443, so NAT and firewalls are non-issues.
+- The relay pairs two streams by a **rendezvous token** = a hash over the two
+  peers' pinned public keys (each side can compute it; the relay learns nothing
+  from it). It then splices the streams and forwards ciphertext blindly. It has
+  no pinned key, so it cannot impersonate either side or MITM the qdrop
+  handshake that runs on top.
+- `config.toml` gains `relay = "wss://relay.example.org"`. The daemon keeps one
+  idle control connection to the relay with keepalives; when a direct path to a
+  peer is unavailable it opens a relayed session on demand.
+- **Direct is always preferred.** A relayed session periodically re-probes for
+  a direct path (LAN rediscovery, static endpoint) and migrates to it
+  transparently, then drops the relay leg — like Tailscale's DERP→direct
+  upgrade. `qdrop status` / `qdrop peers` show `direct` vs `via relay`.
+- *Stretch:* use the relay as a STUN-style coordinator to exchange candidate
+  addresses and UDP hole-punch a direct P2P link before falling back to
+  forwarding.
+
+### Notes
+
+- Discovery over the relay: a peer registers "online" under its device id;
+  another peer asks "is X reachable?" and the relay connects them if both are
+  present. No presence is shared beyond peers you've paired with.
+- Threat model addendum: a relay operator sees **metadata** — which device ids
+  talk, when, and roughly how much — but never content. Running your own relay
+  (or using a VPN endpoint instead) removes even that.
+- Everything is opt-in: with no `endpoint` and no `relay` configured, qdrop
+  stays exactly as LAN-only as it is today.
+
+**Done when:** two machines on different networks, both behind NAT with no
+port-forwarding, pair with `qdrop pair` and sync clipboard + files through the
+relay; when they later join the same LAN they switch to a direct connection
+with no user action and `qdrop status` flips from `via relay` to `direct`;
+stopping the relay only affects peers that have no direct path.
+
+---
+
 ## Deferred (post-v1)
 
 - Clipboard history (start last-value only).
 - `… | qdrop send -` stdin support (cheap add — could fold into M4 if wanted).
-- Internet relay / NAT traversal.
 - More than a handful of devices; mobile.
