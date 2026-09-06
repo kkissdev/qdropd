@@ -3,6 +3,7 @@
 //! file changes, without tearing down the TLS config.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Arc, RwLock};
 
 use crate::Peers;
@@ -13,6 +14,9 @@ pub struct RosterPeer {
     pub device_id: String,
     pub name: String,
     pub public_key: [u8; 32],
+    /// Operator-configured addresses to dial in addition to mDNS (resolved
+    /// from `peers.toml`'s `address` field when the roster loaded).
+    pub static_addrs: Vec<SocketAddr>,
 }
 
 #[derive(Debug, Default)]
@@ -40,6 +44,24 @@ impl RosterInner {
 
     pub fn ids(&self) -> Vec<String> {
         self.by_id.keys().cloned().collect()
+    }
+
+    /// Static dial addresses configured for a peer, or `[]` if none.
+    pub fn static_addrs_for(&self, device_id: &str) -> Vec<SocketAddr> {
+        self.by_id
+            .get(device_id)
+            .and_then(|k| self.by_key.get(k))
+            .map(|p| p.static_addrs.clone())
+            .unwrap_or_default()
+    }
+
+    /// `(device_id, name, addrs)` for every peer that has a static address.
+    pub fn peers_with_static_addrs(&self) -> Vec<(String, String, Vec<SocketAddr>)> {
+        self.by_key
+            .values()
+            .filter(|p| !p.static_addrs.is_empty())
+            .map(|p| (p.device_id.clone(), p.name.clone(), p.static_addrs.clone()))
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -91,6 +113,7 @@ impl Roster {
                     device_id: p.device_id.clone(),
                     name: p.name.clone(),
                     public_key: key,
+                    static_addrs: p.static_addrs(),
                 }),
                 Err(e) => tracing::warn!("skipping peer {}: {e}", p.name),
             }

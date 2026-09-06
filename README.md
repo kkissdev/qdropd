@@ -10,7 +10,7 @@ All nine milestones from [`MILESTONES.md`](MILESTONES.md) are implemented; see
 ```bash
 # on both machines
 git clone https://github.com/kkissdev/qdropd && cd qdropd
-./packaging/install.sh          # builds, installs qdrop + qdropd, starts the service
+./install.sh                    # builds, installs qdrop + qdropd, starts the service
 
 # pair them (once)
 qdrop pair                      # machine A: prints a 6-digit PIN
@@ -57,6 +57,10 @@ menu-bar shell, the waybar module, and send-trigger recipes.
 `config.toml` (all keys optional), `peers.toml` (pairing writes it),
 `identity.pem` (0600), `state.json` (daemon-written). See
 [`docs/qdropd.md`](docs/qdropd.md).
+
+Discovery is mDNS on the local link. For a peer that mDNS can't reach (across
+a VPN / tailnet), give its `peers.toml` entry a static `address = "host[:port]"`
+— `qdrop pair <host-or-ip>` fills this in for the side that dialed.
 
 ## Development
 

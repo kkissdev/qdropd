@@ -225,6 +225,14 @@ async fn manager(
     // dialing immediately when a peer becomes trusted.
     let mut discovered: HashMap<String, DiscoveredPeer> = HashMap::new();
 
+    // Peers with an operator-configured `address` are dialed without waiting
+    // for mDNS (they are typically on another link where it never resolves).
+    for p in static_peers(&cfg) {
+        if cfg.roster.read().is_trusted_id(&p.device_id) {
+            ensure_peer(&cfg, &own_id, &internal_tx, &hub, &mut peers, &p);
+        }
+    }
+
     while let Some(msg) = internal_rx.recv().await {
         match msg {
             Internal::Discovery(DiscoveryEvent::Found(p)) => {
@@ -237,10 +245,15 @@ async fn manager(
             }
             Internal::Discovery(DiscoveryEvent::Lost { device_id }) => {
                 discovered.remove(&device_id);
+                let fallback = cfg.roster.read().static_addrs_for(&device_id);
                 if let Some(entry) = peers.get_mut(&device_id) {
-                    tracing::info!(peer = %device_id, "peer lost from mDNS");
+                    if fallback.is_empty() {
+                        tracing::info!(peer = %device_id, "peer lost from mDNS");
+                    } else {
+                        tracing::info!(peer = %device_id, "peer lost from mDNS; keeping static address");
+                    }
                     if let Some(tx) = &entry.addrs_tx {
-                        let _ = tx.send(Vec::new());
+                        let _ = tx.send(fallback);
                     }
                 }
             }
@@ -271,8 +284,13 @@ async fn manager(
                         tracing::info!(peer = %id, "dropped connection: peer unpaired");
                     }
                 }
-                // Start dialing peers that just became trusted.
-                for p in discovered.values().cloned().collect::<Vec<_>>() {
+                // Start dialing peers that just became trusted, whether we
+                // know them from mDNS or only from a configured static address.
+                let mut seed: HashMap<String, DiscoveredPeer> = discovered.clone();
+                for p in static_peers(&cfg) {
+                    seed.entry(p.device_id.clone()).or_insert(p);
+                }
+                for p in seed.into_values() {
                     if cfg.roster.read().is_trusted_id(&p.device_id) {
                         ensure_peer(&cfg, &own_id, &internal_tx, &hub, &mut peers, &p);
                     }
@@ -380,10 +398,16 @@ fn ensure_peer(
 
     match role {
         Role::Dialer => {
+            let mut addrs = p.addrs.clone();
+            for sa in cfg.roster.read().static_addrs_for(&p.device_id) {
+                if !addrs.contains(&sa) {
+                    addrs.push(sa);
+                }
+            }
             if let Some(tx) = &entry.addrs_tx {
-                let _ = tx.send(p.addrs.clone());
+                let _ = tx.send(addrs);
             } else {
-                let (tx, rx) = watch::channel(p.addrs.clone());
+                let (tx, rx) = watch::channel(addrs);
                 entry.addrs_tx = Some(tx);
                 entry.task = Some(tokio::spawn(dial_loop(
                     p.device_id.clone(),
@@ -399,6 +423,21 @@ fn ensure_peer(
             tracing::info!(peer = %p.device_id, name = %p.device_name, "discovered paired peer (we accept)");
         }
     }
+}
+
+/// Synthetic discovery records for roster peers that carry a static address.
+fn static_peers(cfg: &TransportConfig) -> Vec<DiscoveredPeer> {
+    cfg.roster
+        .read()
+        .peers_with_static_addrs()
+        .into_iter()
+        .map(|(device_id, device_name, addrs)| DiscoveredPeer {
+            device_id,
+            device_name,
+            fingerprint: String::new(),
+            addrs,
+        })
+        .collect()
 }
 
 fn spawn_accept_loop(
@@ -653,6 +692,14 @@ mod tests {
         Roster::from_peers(&doc)
     }
 
+    fn roster_with_addr(id: &str, ident: &Identity, addr: SocketAddr) -> Roster {
+        let mut doc = Peers::default();
+        let mut p = Peer::new(format!("name-{id}"), id, &ident.public_key());
+        p.address = Some(addr.to_string());
+        doc.upsert(p);
+        Roster::from_peers(&doc)
+    }
+
     #[test]
     fn arbitration_is_deterministic_and_opposite() {
         assert_eq!(role_for("aaaa", "ffff"), Role::Dialer);
@@ -729,6 +776,57 @@ mod tests {
                 TransportEvent::PeerDisconnected { device_id, .. } => assert_eq!(device_id, HIGH),
                 other => panic!("round {round}: expected disconnect, got {other:?}"),
             }
+        }
+        mgr.abort();
+    }
+
+    // A paired peer with a static `address` is dialed even though mDNS never
+    // resolves it (no discovery event is ever sent).
+    #[tokio::test]
+    async fn static_address_is_dialed_without_mdns() {
+        let dir = tempfile::tempdir().unwrap();
+        let us = identity_at(dir.path(), "us.pem");
+        let them = identity_at(dir.path(), "them.pem");
+
+        let peer_roster = roster_of(&[(LOW, &us)]);
+        let peer_server = qdrop_core::tls::server_config(&them, peer_roster).unwrap();
+        let peer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let peer_addr = peer_listener.local_addr().unwrap();
+
+        let our_roster = roster_with_addr(HIGH, &them, peer_addr);
+        let cfg = fast_cfg(hello(LOW), us.clone(), our_roster);
+        let our_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (_disco_tx, disco_rx) = mpsc::channel(8);
+        let (ev_tx, mut ev_rx) = mpsc::channel(16);
+        let (hub_tx, _hub_rx) = mpsc::channel(16);
+        let mgr = spawn(
+            cfg,
+            our_listener,
+            disco_rx,
+            never(),
+            PeerBus::new(),
+            hub_tx,
+            Some(ev_tx),
+        );
+
+        let (tcp, _) = tokio::time::timeout(Duration::from_secs(3), peer_listener.accept())
+            .await
+            .expect("dialer should connect via the static address")
+            .unwrap();
+        let acceptor = tokio_rustls::TlsAcceptor::from(peer_server);
+        let mut tls = secure::SecureStream::from(acceptor.accept(tcp).await.unwrap());
+        let peer_hello = hello(HIGH);
+        handshake(&mut tls, &peer_hello, Some(LOW), Duration::from_secs(3))
+            .await
+            .unwrap();
+
+        match tokio::time::timeout(Duration::from_secs(3), ev_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            TransportEvent::PeerConnected { device_id, .. } => assert_eq!(device_id, HIGH),
+            other => panic!("expected connect, got {other:?}"),
         }
         mgr.abort();
     }

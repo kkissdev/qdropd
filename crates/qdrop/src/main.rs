@@ -102,6 +102,7 @@ fn cmd_peers(args: &cli::PeersArgs) -> Result<()> {
                     "device_id": p.device_id,
                     "public_key": p.public_key,
                     "online": state.is_online(&p.device_id),
+                    "address": p.address,
                     "last_seen_unix": state
                         .online
                         .get(&p.device_id)
@@ -127,6 +128,9 @@ fn cmd_peers(args: &cli::PeersArgs) -> Result<()> {
             ("offline", "never".to_string())
         };
         println!("{:<20} {:<9} {}", p.name, status, when);
+        if let Some(addr) = &p.address {
+            println!("{:<20} static address {addr}", "");
+        }
     }
     Ok(())
 }
@@ -161,7 +165,16 @@ fn cmd_pair(args: &cli::PairArgs, verbose: bool) -> Result<()> {
         }
     };
 
-    record_peer(&paired)?;
+    // When we dialed the peer by address, remember it: that is exactly the
+    // case where the two machines are on different links and mDNS will not
+    // resolve the peer later. Strip any port — the daemon adds the data port.
+    let address = args.target.as_deref().map(|t| {
+        t.rsplit_once(':')
+            .filter(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
+            .map(|(host, _)| host.to_string())
+            .unwrap_or_else(|| t.to_string())
+    });
+    record_peer(&paired, address)?;
     if verbose {
         tracing::debug!(?paired, "pairing complete");
     }
@@ -184,13 +197,16 @@ fn cmd_unpair(name: &str) -> Result<()> {
     }
 }
 
-fn record_peer(paired: &Paired) -> Result<()> {
+fn record_peer(paired: &Paired, address: Option<String>) -> Result<()> {
     let mut peers = Peers::load()?;
-    peers.upsert(Peer::new(
-        &paired.device_name,
-        &paired.device_id,
-        &paired.public_key,
-    ));
+    let mut peer = Peer::new(&paired.device_name, &paired.device_id, &paired.public_key);
+    // Keep a previously-configured address if this pairing didn't supply one.
+    peer.address = address.or_else(|| {
+        peers
+            .find_by_id(&paired.device_id)
+            .and_then(|p| p.address.clone())
+    });
+    peers.upsert(peer);
     peers.save()?;
     Ok(())
 }

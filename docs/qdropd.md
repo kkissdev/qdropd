@@ -90,6 +90,20 @@ and Linux. Set `QDROP_CONFIG_DIR` to point elsewhere (used by tests).
 - **`peers.toml`** — the paired-device registry. Written by `qdrop pair`
   (M2); `qdropd` reads it to decide who it will talk to.
 
+  Each `[[peer]]` may carry an optional `address` (`host`, `host:port`, `ip`,
+  or `ip:port`; a missing port means `47654`). The dialer tries it **in
+  addition to** mDNS, so peers that share no broadcast domain — e.g. reachable
+  only over a VPN or tailnet — still connect. `qdrop pair <host-or-ip>` records
+  the target it dialed here automatically. Set it by hand for the other side:
+
+  ```toml
+  [[peer]]
+  name = "ws"
+  device_id = "…"
+  public_key = "…"
+  address = "100.67.13.80"
+  ```
+
 A missing config file is not an error — `qdropd` runs on defaults.
 
 ---

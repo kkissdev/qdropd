@@ -1,5 +1,6 @@
 //! `peers.toml` — the registry of paired devices, written by `qdrop pair`.
 
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -29,6 +30,12 @@ pub struct Peer {
     /// Hostname recorded during authorization.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
+    /// Static address the dialer should try in addition to mDNS discovery,
+    /// for peers on a different link (e.g. reachable only over a VPN/tailnet).
+    /// Accepts `host`, `host:port`, `ip`, or `ip:port`; a missing port means
+    /// [`crate::DEFAULT_PORT`]. Names are resolved when the roster loads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 impl Peer {
@@ -46,6 +53,42 @@ impl Peer {
             authorized: false,
             macs: Vec::new(),
             hostname: None,
+            address: None,
+        }
+    }
+
+    /// Resolve [`Peer::address`] to socket addresses, or `[]` if unset or
+    /// unresolvable. A bare host/ip gets [`crate::DEFAULT_PORT`].
+    pub fn static_addrs(&self) -> Vec<SocketAddr> {
+        let Some(raw) = self
+            .address
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Vec::new();
+        };
+        if let Ok(sa) = raw.parse::<SocketAddr>() {
+            return vec![sa];
+        }
+        if let Ok(ip) = raw.parse::<std::net::IpAddr>() {
+            return vec![SocketAddr::new(ip, crate::DEFAULT_PORT)];
+        }
+        let with_port = if raw
+            .rsplit(':')
+            .next()
+            .is_some_and(|p| p.parse::<u16>().is_ok())
+        {
+            raw.to_string()
+        } else {
+            format!("{raw}:{}", crate::DEFAULT_PORT)
+        };
+        match with_port.to_socket_addrs() {
+            Ok(iter) => iter.collect(),
+            Err(e) => {
+                tracing::warn!("peer {}: cannot resolve address {raw:?}: {e}", self.name);
+                Vec::new()
+            }
         }
     }
 
@@ -156,6 +199,50 @@ mod tests {
     fn missing_file_is_empty_registry() {
         let peers = Peers::load_from("/no/such/peers.toml").unwrap();
         assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn static_addr_parsing() {
+        let mut p = Peer::new("box", "id", &[0u8; 32]);
+        assert!(p.static_addrs().is_empty());
+
+        p.address = Some("100.67.13.80".into());
+        assert_eq!(
+            p.static_addrs(),
+            vec!["100.67.13.80:47654".parse().unwrap()]
+        );
+
+        p.address = Some("100.67.13.80:51000".into());
+        assert_eq!(
+            p.static_addrs(),
+            vec!["100.67.13.80:51000".parse().unwrap()]
+        );
+
+        p.address = Some("  ".into());
+        assert!(p.static_addrs().is_empty());
+
+        p.address = Some("[::1]:9".into());
+        assert_eq!(p.static_addrs(), vec!["[::1]:9".parse().unwrap()]);
+
+        p.address = Some("::1".into());
+        assert_eq!(p.static_addrs(), vec!["[::1]:47654".parse().unwrap()]);
+    }
+
+    #[test]
+    fn address_roundtrips_through_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("peers.toml");
+        let mut peers = Peers::default();
+        let mut peer = Peer::new("ws", "id-ws", &[5u8; 32]);
+        peer.address = Some("100.67.13.80".into());
+        peers.upsert(peer);
+        peers.save_to(&path).unwrap();
+
+        let back = Peers::load_from(&path).unwrap();
+        assert_eq!(
+            back.find("ws").unwrap().address.as_deref(),
+            Some("100.67.13.80")
+        );
     }
 
     #[test]
