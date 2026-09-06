@@ -33,6 +33,11 @@ cargo run --bin qdropd -- --version
 cargo run --bin qdropd -- --check   # load config, print the plan, exit
 ```
 
+## Daemon
+
+`qdropd` is a foreground shell command; see [`docs/qdropd.md`](docs/qdropd.md)
+for full usage. A service-manager unit to run it in the background comes in M8.
+
 ## Configuration
 
 Read from `~/.config/qdrop/` on both platforms (override the directory with
