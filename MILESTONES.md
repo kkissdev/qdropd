@@ -2,7 +2,7 @@
 
 Derived from [`qdropdesign.md`](qdropdesign.md). Each milestone is independently
 demoable and ordered so the daily-driver cut (M1–M6) lands first, with hardening
-and polish after. M0–M9 are implemented; M10–M11 are planned.
+and polish after. M0–M9 are implemented; M10–M21 are planned.
 
 ---
 
@@ -280,8 +280,194 @@ stopping the relay only affects peers that have no direct path.
 
 ---
 
+## M12 — Windows support
+
+**Goal:** qdrop runs on Windows alongside macOS and Linux.
+
+- Clipboard: `arboard` already reads/writes on Windows. Add concealed-content
+  detection — skip items whose clipboard carries
+  `ExcludeClipboardContentFromMonitorProcessing` / `CanIncludeInClipboardHistory`
+  (0) or a password-manager "confidential" format.
+- Control channel: a Windows **named pipe** (`\\.\pipe\qdropd`) in place of the
+  Unix socket; `qdrop_core::control` abstracts the transport.
+- Service: install as a Windows Service (or a Scheduled Task at logon via the
+  installer); graceful stop on `SERVICE_CONTROL_STOP`.
+- Notifications: Windows toast.
+- Packaging: a `.msi` (WiX) or a Scoop manifest; CI gains
+  `x86_64-pc-windows-msvc` in the build matrix.
+
+**Done when:** a Windows box pairs with a Mac, clipboard + file send work both
+ways and survive a reboot; copying a password-manager field on Windows produces
+nothing on the peer.
+
+---
+
+## M13 — Pipe & stdio
+
+**Goal:** qdrop composes with the shell.
+
+- `cmd | qdrop send -` streams stdin as a blob (`--name`, else
+  `stdin-<ts>.bin`); one blob, backpressured like any file.
+- `qdrop recv [--stdout]` pulls the next incoming blob to stdout instead of the
+  Downloads folder.
+- `qdrop paste` prints the peer's current clipboard text to stdout;
+  `qdrop copy` reads stdin and sets it as the shared clipboard.
+- Clean exit codes and a `--quiet` flag for scripts.
+
+**Done when:** `tar czf - dir | qdrop send - --name backup.tgz` lands a valid
+archive on the peer; `qdrop paste > url.txt` captures the peer's clipboard.
+
+---
+
+## M14 — Clipboard history
+
+**Goal:** get back something you copied three copies ago.
+
+- Ring buffer of the last N distinct entries (`clipboard_history = 25`), text +
+  small images, in memory plus a size-capped on-disk cache
+  (`~/.config/qdrop/history/`); oldest evicted.
+- `qdrop clip --history` lists them (index, preview, age, origin device);
+  `qdrop clip --restore <n>` re-copies entry n locally;
+  `qdrop clip --send <n> [--to name]` pushes it.
+- Entries skipped as concealed / transient are never recorded.
+- Menu-bar and waybar gain a "recent" submenu.
+
+**Done when:** copy A, B, C; `qdrop clip --restore 2` puts B back on the
+clipboard; concealed copies never appear; history survives a daemon restart.
+
+---
+
+## M15 — Identity key at rest
+
+**Goal:** `identity.pem` stops being a plaintext file any process running as
+you can copy.
+
+- Store the Ed25519 private key in the OS secret store — macOS Keychain, Linux
+  Secret Service / libsecret. Fallback: an age-encrypted file with a passphrase
+  prompt on daemon start (cached for the session).
+- Migration: on upgrade, import the existing `identity.pem` into the store,
+  then shred the file.
+- `qdrop identity --show` (fingerprint only), `--rotate` (new key + re-pair
+  prompt), `--export` (guarded, for backup).
+
+**Done when:** after a fresh install there is no cleartext private key on disk;
+the daemon starts unattended from the keychain on macOS and Linux;
+`identity --rotate` then re-pair works.
+
+---
+
+## M16 — `qdrop doctor`
+
+**Goal:** one command tells you why it isn't working.
+
+- Checks: daemon running + version; config parses; identity present; mDNS
+  advertise **and** browse seeing traffic; the TCP port and UDP 5353 reachable
+  (firewall); per paired peer — discovered? dialable? TLS handshake? clock skew;
+  relay reachable (M11); free space in the download dir.
+- Output: green / yellow / red per check with the specific fix
+  ("open TCP 47654", "peer clocks differ by 4m — fix NTP").
+- `--json` for bug reports; attaches the last N daemon log lines.
+
+**Done when:** with the network unplugged, the port blocked, or the config
+corrupted, `qdrop doctor` names the exact problem each time.
+
+---
+
+## M17 — End-to-end test suite in CI
+
+**Goal:** the pair → sync → send path is covered automatically, not by hand.
+
+- A harness that starts two `qdropd` instances (Linux network namespaces, or
+  two loopback ports with separate `QDROP_CONFIG_DIR`s), scripts pairing, and
+  asserts: clipboard text + image propagate; `qdrop send` round-trips with a
+  matching SHA-256; `qdrop open` dispatches; unpair revokes; a killed
+  connection re-establishes.
+- Runs as a CI job (Linux, and macOS if the runners allow) wired into the
+  existing workflow.
+- Optional `tc netem` variant adding loss/latency to exercise reconnect and
+  resume.
+
+**Done when:** the suite runs in under ~2 minutes in CI and fails if any
+earlier milestone's "done when" regresses.
+
+---
+
+## M18 — File-list clipboard
+
+**Goal:** copy files in the file manager, paste them on the other machine.
+
+- macOS: read `public.file-url` / `NSFilenamesPboardType`. Linux: `text/uri-list`
+  from the Wayland offer.
+- On a copy of a small set of files (count + total size under a cap), send them
+  through the blob path tagged as a clipboard file-set; the receiver stages them
+  in a temp dir and puts the resulting file URLs on its clipboard, so a paste in
+  Finder / Nautilus drops the files.
+- `sync_files` config toggle; respects `require_confirm` and `qdrop auth` (M10).
+
+**Done when:** select three files in Finder, Cmd-C, then Cmd-V in a folder on
+the Linux box → the three files appear.
+
+---
+
+## M19 — QR / link pairing
+
+**Goal:** pair without reading an IP and a PIN aloud.
+
+- `qdrop pair` also renders a QR code and prints a
+  `qdrop://pair?h=<host>&p=<port>&v=1#<pin>` URI encoding the transport hint —
+  the PIN still only ever exists inside SPAKE2.
+- `qdrop pair <uri>` (or a scan from the menu-bar app) consumes it with no
+  separate PIN entry.
+- Works with M11: the URI can carry a relay rendezvous instead of a host, for
+  cross-network first contact.
+
+**Done when:** scanning the QR shown on A from B (or pasting the URI) completes
+pairing with no other input; a tampered URI still fails the SPAKE2 check.
+
+---
+
+## M20 — Lock-aware sync
+
+**Goal:** don't push clipboard contents onto a screen someone else is looking
+at, and don't sync while yours is locked.
+
+- Detect local lock / unlock: macOS `com.apple.screenIsLocked` /
+  `CGSessionCopyCurrentDictionary`; Linux `org.freedesktop.login1` `LockedHint`
+  or the screensaver D-Bus signal.
+- Peers exchange a lock-state bit (a `Presence` frame or an extension to
+  keepalive); the sender **holds** clipboard/file pushes to a locked peer and
+  flushes only the latest on unlock; local lock pauses outbound sync.
+- Config `sync_when_locked = false` (default); `qdrop status` shows peer lock
+  state.
+
+**Done when:** lock machine B, copy on A → nothing lands; unlock B → the latest
+clipboard arrives once; locking A pauses its outbound sync.
+
+---
+
+## M21 — True transfer resume
+
+**Goal:** a dropped multi-GB transfer picks up where it left off, not from
+zero.
+
+- The receiver keeps the `.part` file and a sidecar `{ offset, rolling hash }`;
+  on reconnect the sender sends `BlobResume { id, name, have_offset }` and the
+  receiver replies with the verified offset to continue from (or 0 if the
+  prefix hash does not match).
+- A rolling-hash check over the resumed prefix so a corrupted `.part` restarts
+  cleanly instead of finishing wrong.
+- Applies to files (M4); matters most over an M11 relay. `qdrop status` shows
+  transfer progress and a resume count.
+
+**Done when:** `qdrop send bigfile` interrupted at 60% by a network drop
+completes after reconnect having re-sent only the missing 40%, with a matching
+final SHA-256; a tampered `.part` is detected and the transfer restarts.
+
+---
+
 ## Deferred (post-v1)
 
-- Clipboard history (start last-value only).
-- `… | qdrop send -` stdin support (cheap add — could fold into M4 if wanted).
-- More than a handful of devices; mobile.
+- More than a handful of devices; device groups.
+- Mobile (iOS / Android) clients.
+- Auto-update / release-channel checks.
+- Bandwidth caps and scheduled transfers.
