@@ -24,6 +24,9 @@ pub struct Caps {
     /// Remote URL open (M5).
     #[serde(default)]
     pub open_url: bool,
+    /// Pre-authorization exchange (M10).
+    #[serde(default)]
+    pub auth: bool,
 }
 
 impl Caps {
@@ -33,6 +36,7 @@ impl Caps {
         clipboard_images: false,
         file_send: false,
         open_url: false,
+        auth: false,
     };
 
     /// Everything this build knows how to do.
@@ -41,6 +45,7 @@ impl Caps {
         clipboard_images: true,
         file_send: true,
         open_url: true,
+        auth: true,
     };
 
     /// The capabilities both sides share.
@@ -51,8 +56,21 @@ impl Caps {
             clipboard_images: self.clipboard_images && other.clipboard_images,
             file_send: self.file_send && other.file_send,
             open_url: self.open_url && other.open_url,
+            auth: self.auth && other.auth,
         }
     }
+}
+
+/// Identifying facts a device shares during the M10 authorization exchange.
+/// None of it is a security boundary — the pinned key is. It is a
+/// human-readable label plus a soft "same physical machine" check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    pub hostname: String,
+    /// MAC addresses of non-loopback interfaces, lowercase `aa:bb:...`.
+    pub macs: Vec<String>,
+    /// `std::env::consts::OS` of the peer.
+    pub os: String,
 }
 
 /// First frame each side sends after the TCP connection opens.
@@ -176,6 +194,19 @@ pub enum Message {
     /// Ask the peer to open a URL in its default handler (M5).
     OpenUrl {
         url: String,
+    },
+
+    /// Ask the peer to pre-authorize us as an unattended sender (M10).
+    /// `info` is the requester's own details; `mutual` asks the peer to
+    /// authorize the requester back in the same exchange.
+    AuthRequest {
+        mutual: bool,
+        info: DeviceInfo,
+    },
+    /// Reply to [`Message::AuthRequest`] with the replier's details.
+    AuthReply {
+        ok: bool,
+        info: DeviceInfo,
     },
 }
 

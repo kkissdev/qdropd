@@ -11,7 +11,9 @@ use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::auth::AuthManager;
 use crate::bus::PeerBus;
+use crate::clipboard::ClipboardHandle;
 use crate::filexfer::FileXfer;
 
 pub use qdrop_core::control::socket_path;
@@ -46,6 +48,8 @@ pub struct ControlDeps {
     pub controls: Arc<Controls>,
     pub bus: PeerBus,
     pub filex: Arc<FileXfer>,
+    pub auth: Arc<AuthManager>,
+    pub clipboard: Option<Arc<ClipboardHandle>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +68,17 @@ enum Request {
         url: String,
         #[serde(default)]
         to: Option<String>,
+    },
+    Auth {
+        name: String,
+        #[serde(default)]
+        mutual: bool,
+    },
+    /// `qdrop paste` — the daemon's current clipboard text.
+    ClipGet,
+    /// `qdrop copy` — set the shared clipboard.
+    ClipSet {
+        text: String,
     },
 }
 
@@ -139,6 +154,40 @@ async fn dispatch(req: Request, deps: &ControlDeps) -> serde_json::Value {
             match crate::weblink::dispatch(&deps.bus, &url, to.as_deref()) {
                 Ok(n) => json!({ "ok": true, "dispatched": n }),
                 Err(e) => json!({ "ok": false, "error": e }),
+            }
+        }
+        Request::ClipGet => match &deps.clipboard {
+            None => json!({ "ok": false, "error": "clipboard unavailable on this host" }),
+            Some(h) => {
+                let h = h.clone();
+                let text = tokio::task::spawn_blocking(move || h.get_text())
+                    .await
+                    .ok()
+                    .flatten();
+                json!({ "ok": true, "text": text })
+            }
+        },
+        Request::ClipSet { text } => match &deps.clipboard {
+            None => json!({ "ok": false, "error": "clipboard unavailable on this host" }),
+            Some(h) => {
+                h.apply_text(text);
+                json!({ "ok": true })
+            }
+        },
+        Request::Auth { name, mutual } => {
+            let id = qdrop_core::Peers::load().ok().and_then(|p| {
+                p.find(&name)
+                    .or_else(|| p.find_by_id(&name))
+                    .map(|p| p.device_id.clone())
+            });
+            match id {
+                None => {
+                    json!({ "ok": false, "error": format!("no paired peer matching {name:?}") })
+                }
+                Some(id) => match deps.auth.authorize(&id, mutual).await {
+                    Ok(host) => json!({ "ok": true, "hostname": host }),
+                    Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+                },
             }
         }
     }

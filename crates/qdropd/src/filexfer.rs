@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use qdrop_core::proto::{safe_blob_name, BlobPurpose, Message, BLOB_CHUNK};
-use qdrop_core::Config;
+use qdrop_core::{Config, ConfirmPolicy};
 use sha2::{Digest, Sha256};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -45,7 +45,7 @@ const MAX_CONCURRENT_INCOMING: usize = 16;
 pub struct FileXfer {
     bus: PeerBus,
     download_dir: PathBuf,
-    require_confirm: bool,
+    confirm: ConfirmPolicy,
     next_id: AtomicU64,
     /// transfer id -> ack waiter (sender side).
     acks: Mutex<HashMap<u64, oneshot::Sender<(bool, String)>>>,
@@ -84,7 +84,7 @@ impl FileXfer {
         Arc::new(Self {
             bus,
             download_dir,
-            require_confirm: config.require_confirm,
+            confirm: config.require_confirm,
             next_id: AtomicU64::new(1),
             acks: Mutex::new(HashMap::new()),
             incoming: Mutex::new(HashMap::new()),
@@ -155,7 +155,7 @@ impl FileXfer {
                     self.reject(&peer_id, id, "unsafe filename").await;
                     return;
                 };
-                let final_dir = if self.require_confirm {
+                let final_dir = if needs_confirm(self.confirm, &peer_id) {
                     self.download_dir.join("pending")
                 } else {
                     self.download_dir.clone()
@@ -305,7 +305,7 @@ impl FileXfer {
                         detail: inc.name.clone(),
                     },
                 );
-                let where_ = if self.require_confirm {
+                let where_ = if needs_confirm(self.confirm, &peer_id) {
                     format!("{} (pending review)", dest.display())
                 } else {
                     dest.display().to_string()
@@ -542,6 +542,18 @@ async fn stream_blob(
     }
 }
 
+/// Whether an incoming transfer from `peer_id` should be diverted for
+/// confirmation, given the policy and whether the peer is `qdrop auth`'d.
+pub(crate) fn needs_confirm(policy: ConfirmPolicy, peer_id: &str) -> bool {
+    match policy {
+        ConfirmPolicy::Never => false,
+        ConfirmPolicy::Always => true,
+        ConfirmPolicy::Unlisted => !qdrop_core::Peers::load()
+            .map(|p| p.is_authorized(peer_id))
+            .unwrap_or(false),
+    }
+}
+
 fn resolve_peer(name: &str) -> Option<String> {
     let peers = qdrop_core::Peers::load().ok()?;
     peers
@@ -581,9 +593,13 @@ mod tests {
     use super::*;
     use qdrop_core::proto::Message;
 
-    fn cfg(require_confirm: bool) -> Config {
+    fn cfg(confirm: bool) -> Config {
         Config {
-            require_confirm,
+            require_confirm: if confirm {
+                ConfirmPolicy::Always
+            } else {
+                ConfirmPolicy::Never
+            },
             ..Config::default()
         }
     }

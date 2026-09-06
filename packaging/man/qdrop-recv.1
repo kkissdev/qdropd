@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH recv 1  "recv " 
+.SH NAME
+recv \- Wait for an incoming file; print its path or stream it to stdout
+.SH SYNOPSIS
+\fBqdrop recv\fR [\fB\-\-stdout\fR] [\fB\-\-keep\fR] [\fB\-\-timeout\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Wait for an incoming file; print its path or stream it to stdout
+.SH OPTIONS
+.TP
+\fB\-\-stdout\fR
+Write the file\*(Aqs contents to stdout instead of leaving it on disk
+.TP
+\fB\-\-keep\fR
+With `\-\-stdout`, keep the file in the download folder too
+.TP
+\fB\-\-timeout\fR \fI<SECS>\fR
+Give up after this many seconds (default 300)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

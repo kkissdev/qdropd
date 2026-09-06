@@ -4,6 +4,7 @@
 //! M3: bidirectional clipboard **text** sync + a control socket for
 //! `qdrop clip --pause/--resume/--status`.
 
+mod auth;
 mod backoff;
 mod bus;
 mod clipboard;
@@ -171,11 +172,14 @@ fn real_main() -> Result<()> {
             .unwrap_or_else(|_| std::path::PathBuf::from("qdrop-downloads"));
         let (clip_img_tx, clip_img_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
         let filex = FileXfer::new(&config, bus.clone(), download_dir, Some(clip_img_tx));
+        let auth = auth::AuthManager::new(bus.clone());
+        let confirm_policy = config.require_confirm;
 
         // Route inbound application frames to the right subsystem.
         let (clip_tx, clip_rx) = tokio::sync::mpsc::channel::<(String, Message)>(64);
         {
             let filex = filex.clone();
+            let auth = auth.clone();
             let mut hub_rx = hub_rx;
             tokio::spawn(async move {
                 while let Some((peer, msg)) = hub_rx.recv().await {
@@ -187,14 +191,19 @@ fn real_main() -> Result<()> {
                         | Message::BlobChunk { .. }
                         | Message::BlobEnd { .. }
                         | Message::BlobAck { .. } => filex.handle_inbound(peer, msg).await,
-                        Message::OpenUrl { url } => weblink::handle_inbound(&peer, url),
+                        Message::OpenUrl { url } => {
+                            weblink::handle_inbound(&peer, url, confirm_policy)
+                        }
+                        Message::AuthRequest { .. } | Message::AuthReply { .. } => {
+                            auth.handle_inbound(peer, msg).await
+                        }
                         _ => {}
                     }
                 }
             });
         }
 
-        sync::spawn(
+        let clipboard = sync::spawn(
             &config,
             device_id.clone(),
             bus.clone(),
@@ -208,6 +217,8 @@ fn real_main() -> Result<()> {
             controls: controls.clone(),
             bus: bus.clone(),
             filex: filex.clone(),
+            auth: auth.clone(),
+            clipboard,
         }) {
             Ok(h) => Some(h),
             Err(e) => {
@@ -221,7 +232,7 @@ fn real_main() -> Result<()> {
             "listening; advertising over mDNS (TLS 1.3, pinned keys); clipboard sync active"
         );
 
-        let events = tokio::spawn(state::publish_events(ev_rx));
+        let events = tokio::spawn(state::publish_events(ev_rx, auth.clone()));
 
         wait_for_shutdown().await;
         tracing::info!("shutdown signal received, stopping");

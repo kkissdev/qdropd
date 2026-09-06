@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH auth 1  "auth " 
+.SH NAME
+auth \- Pre\-authorize a paired peer to send here unattended
+.SH SYNOPSIS
+\fBqdrop auth\fR [\fB\-\-remove\fR] [\fB\-\-mutual\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAME\fR] 
+.SH DESCRIPTION
+Pre\-authorize a paired peer to send here unattended
+.SH OPTIONS
+.TP
+\fB\-\-remove\fR \fI<NAME>\fR
+Revoke authorization for this peer
+.TP
+\fB\-\-mutual\fR
+Also ask the peer to authorize this machine back
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fINAME\fR]
+Peer name or device id to authorize (must be paired and connected)

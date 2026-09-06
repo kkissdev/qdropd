@@ -7,15 +7,24 @@
 use std::process::Stdio;
 
 use qdrop_core::proto::{is_allowed_url, Message};
+use qdrop_core::ConfirmPolicy;
 
 use crate::bus::PeerBus;
-use crate::filexfer::peer_label;
+use crate::filexfer::{needs_confirm, peer_label};
 use crate::notify::notify;
 
 /// Handle an inbound `OpenUrl` from `peer_id`.
-pub fn handle_inbound(peer_id: &str, url: String) {
+pub fn handle_inbound(peer_id: &str, url: String, confirm: ConfirmPolicy) {
     if !is_allowed_url(&url) {
         tracing::warn!(peer = %peer_id, url = %url, "refused OpenUrl: scheme not allowed");
+        return;
+    }
+    if needs_confirm(confirm, peer_id) {
+        tracing::info!(peer = %peer_id, url = %url, "holding OpenUrl: peer not authorized");
+        notify(
+            "Link from a device",
+            &format!("{} wants to open: {url}", peer_label(peer_id)),
+        );
         return;
     }
     let launcher = if cfg!(target_os = "macos") {

@@ -16,8 +16,14 @@ _qdrop() {
             ",$1")
                 cmd="qdrop"
                 ;;
+            qdrop,auth)
+                cmd="qdrop__subcmd__auth"
+                ;;
             qdrop,clip)
                 cmd="qdrop__subcmd__clip"
+                ;;
+            qdrop,copy)
+                cmd="qdrop__subcmd__copy"
                 ;;
             qdrop,daemon)
                 cmd="qdrop__subcmd__daemon"
@@ -31,8 +37,14 @@ _qdrop() {
             qdrop,pair)
                 cmd="qdrop__subcmd__pair"
                 ;;
+            qdrop,paste)
+                cmd="qdrop__subcmd__paste"
+                ;;
             qdrop,peers)
                 cmd="qdrop__subcmd__peers"
+                ;;
+            qdrop,recv)
+                cmd="qdrop__subcmd__recv"
                 ;;
             qdrop,send)
                 cmd="qdrop__subcmd__send"
@@ -40,8 +52,14 @@ _qdrop() {
             qdrop,status)
                 cmd="qdrop__subcmd__status"
                 ;;
+            qdrop__subcmd__help,auth)
+                cmd="qdrop__subcmd__help__subcmd__auth"
+                ;;
             qdrop__subcmd__help,clip)
                 cmd="qdrop__subcmd__help__subcmd__clip"
+                ;;
+            qdrop__subcmd__help,copy)
+                cmd="qdrop__subcmd__help__subcmd__copy"
                 ;;
             qdrop__subcmd__help,daemon)
                 cmd="qdrop__subcmd__help__subcmd__daemon"
@@ -55,8 +73,14 @@ _qdrop() {
             qdrop__subcmd__help,pair)
                 cmd="qdrop__subcmd__help__subcmd__pair"
                 ;;
+            qdrop__subcmd__help,paste)
+                cmd="qdrop__subcmd__help__subcmd__paste"
+                ;;
             qdrop__subcmd__help,peers)
                 cmd="qdrop__subcmd__help__subcmd__peers"
+                ;;
+            qdrop__subcmd__help,recv)
+                cmd="qdrop__subcmd__help__subcmd__recv"
                 ;;
             qdrop__subcmd__help,send)
                 cmd="qdrop__subcmd__help__subcmd__send"
@@ -71,7 +95,7 @@ _qdrop() {
 
     case "${cmd}" in
         qdrop)
-            opts="-v -h -V --verbose --help --version pair peers send open clip status daemon help"
+            opts="-v -q -h -V --verbose --quiet --help --version pair peers send recv paste copy open clip auth status daemon help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -84,8 +108,40 @@ _qdrop() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        qdrop__subcmd__auth)
+            opts="-v -q -h -V --remove --mutual --verbose --quiet --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --remove)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         qdrop__subcmd__clip)
-            opts="-v -h -V --pause --resume --toggle --status --verbose --help --version"
+            opts="-v -q -h -V --pause --resume --toggle --status --verbose --quiet --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        qdrop__subcmd__copy)
+            opts="-v -q -h -V --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -99,7 +155,7 @@ _qdrop() {
             return 0
             ;;
         qdrop__subcmd__daemon)
-            opts="-v -h -V --port --verbose --help --version"
+            opts="-v -q -h -V --port --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -117,7 +173,7 @@ _qdrop() {
             return 0
             ;;
         qdrop__subcmd__help)
-            opts="pair peers send open clip status daemon help"
+            opts="pair peers send recv paste copy open clip auth status daemon help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -130,7 +186,35 @@ _qdrop() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        qdrop__subcmd__help__subcmd__auth)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         qdrop__subcmd__help__subcmd__clip)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        qdrop__subcmd__help__subcmd__copy)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -200,7 +284,35 @@ _qdrop() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        qdrop__subcmd__help__subcmd__paste)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         qdrop__subcmd__help__subcmd__peers)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        qdrop__subcmd__help__subcmd__recv)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
@@ -243,7 +355,7 @@ _qdrop() {
             return 0
             ;;
         qdrop__subcmd__open)
-            opts="-v -h -V --to --verbose --help --version"
+            opts="-v -q -h -V --to --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -261,7 +373,7 @@ _qdrop() {
             return 0
             ;;
         qdrop__subcmd__pair)
-            opts="-v -h -V --remove --verbose --help --version"
+            opts="-v -q -h -V --remove --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -278,8 +390,8 @@ _qdrop() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
-        qdrop__subcmd__peers)
-            opts="-v -h -V --json --verbose --help --version"
+        qdrop__subcmd__paste)
+            opts="-v -q -h -V --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -292,14 +404,50 @@ _qdrop() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        qdrop__subcmd__peers)
+            opts="-v -q -h -V --json --verbose --quiet --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        qdrop__subcmd__recv)
+            opts="-v -q -h -V --stdout --keep --timeout --verbose --quiet --help --version"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --timeout)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         qdrop__subcmd__send)
-            opts="-v -h -V --to --verbose --help --version"
+            opts="-v -q -h -V --to --name --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --to)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --name)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -311,7 +459,7 @@ _qdrop() {
             return 0
             ;;
         qdrop__subcmd__status)
-            opts="-v -h -V --json --waybar --verbose --help --version"
+            opts="-v -q -h -V --json --waybar --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

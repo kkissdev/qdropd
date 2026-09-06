@@ -4,13 +4,16 @@
 .SH NAME
 qdrop \- Peer\-to\-peer clipboard, file, and link bridge for your own devices.
 .SH SYNOPSIS
-\fBqdrop\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+\fBqdrop\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-q\fR|\fB\-\-quiet\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
 .SH DESCRIPTION
 Peer\-to\-peer clipboard, file, and link bridge for your own devices.
 .SH OPTIONS
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Increase log verbosity (debug). Overridden by `RUST_LOG`
+.TP
+\fB\-q\fR, \fB\-\-quiet\fR
+Suppress progress/status output (errors still print)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
@@ -26,13 +29,25 @@ qdrop\-peers(1)
 List paired peers and their status
 .TP
 qdrop\-send(1)
-Send one or more files to a peer
+Send one or more files to a peer (use `\-` for stdin)
+.TP
+qdrop\-recv(1)
+Wait for an incoming file; print its path or stream it to stdout
+.TP
+qdrop\-paste(1)
+Print a peer\*(Aqs shared clipboard text to stdout
+.TP
+qdrop\-copy(1)
+Read stdin and set it as the shared clipboard
 .TP
 qdrop\-open(1)
 Open a URL on a peer
 .TP
 qdrop\-clip(1)
 Control clipboard synchronization
+.TP
+qdrop\-auth(1)
+Pre\-authorize a paired peer to send here unattended
 .TP
 qdrop\-status(1)
 Show live daemon status (peers, clipboard)

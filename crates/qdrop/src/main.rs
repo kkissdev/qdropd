@@ -30,9 +30,13 @@ fn run() -> Result<()> {
     match cli.command {
         Command::Peers(args) => cmd_peers(&args),
         Command::Pair(args) => cmd_pair(&args, cli.verbose),
-        Command::Send(args) => cmd_send(&args),
+        Command::Send(args) => cmd_send(&args, cli.quiet),
+        Command::Recv(args) => cmd_recv(&args, cli.quiet),
+        Command::Paste => cmd_paste(),
+        Command::Copy => cmd_copy(cli.quiet),
         Command::Open(args) => cmd_open(&args),
         Command::Clip(args) => cmd_clip(args.action()),
+        Command::Auth(args) => cmd_auth(&args),
         Command::Status(args) => cmd_status(&args),
         Command::Daemon(args) => cmd_daemon(&args, cli.verbose),
     }
@@ -214,33 +218,59 @@ fn shell_quote(s: &str) -> String {
     }
 }
 
-fn cmd_send(args: &cli::SendArgs) -> Result<()> {
+fn cmd_send(args: &cli::SendArgs, quiet: bool) -> Result<()> {
+    // `qdrop send -` reads a single file from stdin into a temp file whose
+    // basename is what the peer will see.
+    let _stdin_temp;
     let mut abs = Vec::new();
-    for path in &args.paths {
-        if !path.is_file() {
-            anyhow::bail!("not a file: {}", path.display());
+    if args.paths.len() == 1 && args.paths[0].as_os_str() == "-" {
+        use std::io::Read;
+        let name = args.name.clone().unwrap_or_else(|| {
+            format!(
+                "stdin-{}.bin",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            )
+        });
+        let name =
+            qdrop_core::proto::safe_blob_name(&name).context("--name is not a valid filename")?;
+        let dir = std::env::temp_dir().join(format!("qdrop-send-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        let path = dir.join(&name);
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("reading stdin")?;
+        std::fs::write(&path, &buf).with_context(|| format!("writing {}", path.display()))?;
+        abs.push(path.to_string_lossy().into_owned());
+        _stdin_temp = TempDir(dir);
+    } else {
+        for path in &args.paths {
+            if !path.is_file() {
+                anyhow::bail!("not a file: {}", path.display());
+            }
+            abs.push(
+                std::fs::canonicalize(path)
+                    .with_context(|| format!("resolving {}", path.display()))?
+                    .to_string_lossy()
+                    .into_owned(),
+            );
         }
-        abs.push(
-            std::fs::canonicalize(path)
-                .with_context(|| format!("resolving {}", path.display()))?
-                .to_string_lossy()
-                .into_owned(),
-        );
     }
 
-    let req = serde_json::json!({
-        "cmd": "send",
-        "paths": abs,
-        "to": args.to,
-    });
-    println!(
-        "Sending {} file(s){}...",
-        abs.len(),
-        args.to
-            .as_deref()
-            .map(|t| format!(" to {t}"))
-            .unwrap_or_default()
-    );
+    let req = serde_json::json!({ "cmd": "send", "paths": abs, "to": args.to });
+    if !quiet {
+        println!(
+            "Sending {} file(s){}...",
+            abs.len(),
+            args.to
+                .as_deref()
+                .map(|t| format!(" to {t}"))
+                .unwrap_or_default()
+        );
+    }
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -256,10 +286,12 @@ fn cmd_send(args: &cli::SendArgs) -> Result<()> {
             let ok = s.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
             let detail = s.get("detail").and_then(|v| v.as_str()).unwrap_or("");
             if ok {
-                println!("  ✓ {name} → {peer}");
+                if !quiet {
+                    println!("  ✓ {name} → {peer}");
+                }
             } else {
                 all_ok = false;
-                println!("  ✗ {name} → {peer}: {detail}");
+                eprintln!("  ✗ {name} → {peer}: {detail}");
             }
         }
     } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
@@ -267,6 +299,116 @@ fn cmd_send(args: &cli::SendArgs) -> Result<()> {
     }
     if !all_ok {
         anyhow::bail!("one or more transfers failed");
+    }
+    Ok(())
+}
+
+/// Removes its directory tree on drop.
+struct TempDir(std::path::PathBuf);
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn cmd_recv(args: &cli::RecvArgs, quiet: bool) -> Result<()> {
+    use std::io::Write;
+    let dir = qdrop_core::paths::downloads_dir()?;
+    std::fs::create_dir_all(&dir).ok();
+
+    let snapshot = |d: &std::path::Path| -> std::collections::HashSet<std::path::PathBuf> {
+        std::fs::read_dir(d)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_file()
+                    && !p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("")
+                        .starts_with('.')
+            })
+            .collect()
+    };
+    let before = snapshot(&dir);
+    if !quiet {
+        eprintln!("Waiting for an incoming file in {}...", dir.display());
+    }
+
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_secs(args.timeout.unwrap_or(300));
+    let new_file = loop {
+        if std::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for a file");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let now = snapshot(&dir);
+        if let Some(p) = now.difference(&before).next().cloned() {
+            // wait for the size to settle (transfer finished + renamed)
+            let s1 = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let s2 = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(1);
+            if s1 == s2 {
+                break p;
+            }
+        }
+    };
+
+    if args.stdout {
+        let bytes = std::fs::read(&new_file)?;
+        std::io::stdout().write_all(&bytes)?;
+        if !args.keep {
+            let _ = std::fs::remove_file(&new_file);
+        }
+    } else {
+        println!("{}", new_file.display());
+    }
+    Ok(())
+}
+
+fn cmd_paste() -> Result<()> {
+    use std::io::Write;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let resp = rt.block_on(qdrop_core::control::request("clip_get"))?;
+    if !resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        anyhow::bail!(
+            "{}",
+            resp.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed")
+        );
+    }
+    if let Some(t) = resp.get("text").and_then(|v| v.as_str()) {
+        std::io::stdout().write_all(t.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn cmd_copy(quiet: bool) -> Result<()> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .context("reading stdin")?;
+    let req = serde_json::json!({ "cmd": "clip_set", "text": text });
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let resp = rt.block_on(qdrop_core::control::request_json(&req))?;
+    if !resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        anyhow::bail!(
+            "{}",
+            resp.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed")
+        );
+    }
+    if !quiet {
+        eprintln!("Copied {} bytes to the shared clipboard.", text.len());
     }
     Ok(())
 }
@@ -289,6 +431,70 @@ fn cmd_open(args: &cli::OpenArgs) -> Result<()> {
     if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         let n = resp.get("dispatched").and_then(|v| v.as_u64()).unwrap_or(0);
         println!("Opened on {n} peer(s).");
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{}",
+            resp.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed")
+        )
+    }
+}
+
+fn cmd_auth(args: &cli::AuthArgs) -> Result<()> {
+    // Revoke — edit peers.toml directly, no daemon needed.
+    if let Some(name) = &args.remove {
+        let mut peers = Peers::load()?;
+        match peers.find_any_mut(name) {
+            Some(p) if p.authorized => {
+                p.authorized = false;
+                peers.save()?;
+                println!("Revoked authorization for {name}.");
+            }
+            Some(_) => println!("{name} was not authorized."),
+            None => anyhow::bail!("no paired peer matching {name:?}"),
+        }
+        return Ok(());
+    }
+
+    // No argument — list authorized peers.
+    let Some(name) = &args.name else {
+        let peers = Peers::load()?;
+        let authed: Vec<_> = peers.peers.iter().filter(|p| p.authorized).collect();
+        if authed.is_empty() {
+            println!("No authorized peers. Run `qdrop auth <name>` while connected to one.");
+            return Ok(());
+        }
+        println!("{:<20} {:<24} MACs", "PEER", "HOSTNAME");
+        for p in authed {
+            println!(
+                "{:<20} {:<24} {}",
+                p.name,
+                p.hostname.as_deref().unwrap_or("-"),
+                if p.macs.is_empty() {
+                    "-".into()
+                } else {
+                    p.macs.join(", ")
+                }
+            );
+        }
+        return Ok(());
+    };
+
+    let req = serde_json::json!({ "cmd": "auth", "name": name, "mutual": args.mutual });
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting async runtime")?;
+    let resp = rt.block_on(qdrop_core::control::request_json(&req))?;
+
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let host = resp.get("hostname").and_then(|v| v.as_str()).unwrap_or("?");
+        println!("Authorized {name} ({host}) — it can now send here unattended.");
+        if args.mutual {
+            println!("Asked {name} to authorize this machine back.");
+        }
         Ok(())
     } else {
         anyhow::bail!(

@@ -127,6 +127,25 @@ no manual step. Clipboard broadcasts are rate-limited; incoming transfers are
 capped (16 concurrent, 64 MiB in-memory). The frame parser and blob
 reassembly are fuzzed in CI. Threat model: [`threat-model.md`](threat-model.md).
 
+## Pre-authorized senders (M10)
+
+`qdrop auth <name>` (run while paired and connected) records the peer's
+hostname + MAC addresses and sets `authorized = true` in `peers.toml`. When
+`require_confirm` is `true`, files and URLs from an authorized peer skip the
+`pending/` gate and land directly; unlisted peers are still diverted.
+`require_confirm = "strict"` prompts everyone. The pinned key is the actual
+trust boundary — a changed MAC on reconnect only logs a notice.
+`qdrop auth --remove <name>` revokes; `qdrop auth` lists.
+
+## Shell pipes (M13)
+
+- `cmd | qdrop send - --name out.bin` — stream stdin to a peer.
+- `qdrop recv [--stdout] [--keep]` — block until a file lands, then print its
+  path (or write its bytes to stdout).
+- `qdrop paste` — the shared clipboard text to stdout; `qdrop copy` — stdin to
+  the shared clipboard (broadcasts like any local copy).
+- `-q` / `--quiet` suppresses progress output.
+
 ## Status & control (M7)
 
 `qdrop status` shows peers (online/offline) and clipboard state from the live

@@ -15,12 +15,13 @@ pub mod peers;
 pub mod proto;
 pub mod roster;
 pub mod state;
+pub mod sysinfo;
 pub mod tls;
 
-pub use config::Config;
+pub use config::{Config, ConfirmPolicy};
 pub use identity::Identity;
 pub use peers::{Peer, Peers};
-pub use proto::{Caps, Hello, Message, PROTOCOL_VERSION};
+pub use proto::{Caps, DeviceInfo, Hello, Message, PROTOCOL_VERSION};
 pub use roster::Roster;
 
 /// Crate version, sourced from `Cargo.toml`.

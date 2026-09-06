@@ -19,7 +19,8 @@ use crate::clipboard::{self, ClipboardHandle, LocalClip};
 use crate::control::Controls;
 use crate::filexfer::FileXfer;
 
-/// Wire up clipboard sync. Returns immediately; work happens in spawned tasks.
+/// Wire up clipboard sync. Returns the clipboard handle (for `qdrop paste` /
+/// `qdrop copy`); work happens in spawned tasks.
 pub fn spawn(
     config: &Config,
     own_id: String,
@@ -28,7 +29,7 @@ pub fn spawn(
     mut clip_frames: mpsc::Receiver<(String, Message)>,
     mut blob_images: mpsc::Receiver<Vec<u8>>,
     controls: Arc<Controls>,
-) {
+) -> Option<Arc<ClipboardHandle>> {
     controls.set_sync_images(config.sync_images);
     let (local_tx, mut local_rx) = mpsc::channel::<LocalClip>(16);
     let clip: Option<Arc<ClipboardHandle>> = if config.sync_clipboard {
@@ -43,6 +44,7 @@ pub fn spawn(
         tracing::info!("clipboard sync disabled by config");
         None
     };
+    let handle = clip.clone();
 
     let max_text = config.max_clipboard_bytes as usize;
 
@@ -140,4 +142,6 @@ pub fn spawn(
             }
         }
     });
+
+    handle
 }

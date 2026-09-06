@@ -1,13 +1,16 @@
 //! Publishes connection state to `~/.config/qdrop/state.json` so `qdrop peers`
 //! can show online / last-seen without a control socket (that arrives in M7).
 
+use std::sync::Arc;
+
 use qdrop_core::state::DaemonState;
 use tokio::sync::mpsc;
 
+use crate::auth::AuthManager;
 use crate::transport::TransportEvent;
 
 /// Consume transport events, updating `state.json` on every change.
-pub async fn publish_events(mut rx: mpsc::Receiver<TransportEvent>) {
+pub async fn publish_events(mut rx: mpsc::Receiver<TransportEvent>, auth: Arc<AuthManager>) {
     let path = match qdrop_core::paths::state_file() {
         Ok(p) => p,
         Err(e) => {
@@ -33,6 +36,10 @@ pub async fn publish_events(mut rx: mpsc::Receiver<TransportEvent>) {
                 if let Some(addr) = addr {
                     state.remember_addr(&device_id, &addr);
                 }
+                // Refresh the recorded label / warn on a MAC change (M10).
+                let auth = auth.clone();
+                let id = device_id.clone();
+                tokio::spawn(async move { auth.refresh(id).await });
             }
             TransportEvent::PeerDisconnected { device_id, reason } => {
                 tracing::info!(peer = %device_id, %reason, "peer offline");

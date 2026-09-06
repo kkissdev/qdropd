@@ -19,10 +19,12 @@ pub enum LocalClip {
     Image(Vec<u8>),
 }
 
-/// A remote update to apply locally.
+/// A remote update to apply locally, or a read request.
 pub enum ClipCommand {
     ApplyText(String),
     ApplyImage(Vec<u8>),
+    /// Reply with the clipboard's current text (`qdrop paste`).
+    GetText(std_mpsc::Sender<Option<String>>),
 }
 
 pub struct ClipboardHandle {
@@ -35,6 +37,12 @@ impl ClipboardHandle {
     }
     pub fn apply_image(&self, png: Vec<u8>) {
         let _ = self.cmd_tx.send(ClipCommand::ApplyImage(png));
+    }
+    /// Read the current clipboard text (blocking, with a short timeout).
+    pub fn get_text(&self) -> Option<String> {
+        let (tx, rx) = std_mpsc::channel();
+        self.cmd_tx.send(ClipCommand::GetText(tx)).ok()?;
+        rx.recv_timeout(Duration::from_secs(2)).ok().flatten()
     }
 }
 
@@ -76,6 +84,14 @@ pub fn start(
                             tracing::warn!("set clipboard image failed: {e}");
                         }
                         last_token = backend.snapshot(images()).map(|s| s.token);
+                    }
+                    Ok(ClipCommand::GetText(reply)) => {
+                        let _ = reply.send(
+                            backend
+                                .snapshot(false)
+                                .and_then(|s| s.text)
+                                .filter(|t| !t.is_empty()),
+                        );
                     }
                     Err(std_mpsc::RecvTimeoutError::Timeout) => {
                         let Some(snap) = backend.snapshot(images()) else {

@@ -31,6 +31,9 @@ its own.
 | `qdrop send <path>… [--to <name>]` | send files to a peer |
 | `qdrop open <url> [--to <name>]` | open a URL on a peer |
 | `qdrop clip --pause\|--resume\|--toggle\|--status` | control clipboard sync |
+| `qdrop auth [<name>]` | pre-authorize a peer to send unattended (`--remove` / `--mutual`) |
+| `qdrop recv [--stdout]` | wait for an incoming file; print its path or stream it |
+| `qdrop paste` / `qdrop copy` | read / set the shared clipboard from a pipe |
 | `qdrop daemon` / `qdropd` | run the daemon in the foreground |
 
 ## Layout

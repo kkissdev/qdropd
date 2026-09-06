@@ -20,6 +20,15 @@ pub struct Peer {
     /// Last successful contact, RFC 3339. `None` until first connect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+    /// Pre-authorized as an unattended sender (`qdrop auth`, M10).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub authorized: bool,
+    /// MAC addresses recorded during authorization (a label + soft check).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub macs: Vec<String>,
+    /// Hostname recorded during authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
 }
 
 impl Peer {
@@ -34,6 +43,9 @@ impl Peer {
             device_id: device_id.into(),
             public_key: STANDARD_NO_PAD.encode(public_key),
             last_seen: None,
+            authorized: false,
+            macs: Vec::new(),
+            hostname: None,
         }
     }
 
@@ -119,6 +131,18 @@ impl Peers {
         self.peers.len() != before
     }
 
+    /// Look up by name or device id (accepts either).
+    pub fn find_any_mut(&mut self, name_or_id: &str) -> Option<&mut Peer> {
+        self.peers
+            .iter_mut()
+            .find(|p| p.name == name_or_id || p.device_id == name_or_id)
+    }
+
+    /// Whether a peer (by device id) is pre-authorized as an unattended sender.
+    pub fn is_authorized(&self, device_id: &str) -> bool {
+        self.find_by_id(device_id).is_some_and(|p| p.authorized)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.peers.is_empty()
     }
@@ -179,5 +203,28 @@ mod tests {
         assert!(peers.remove_by_name("a"));
         assert!(!peers.remove_by_name("a"));
         assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn authorization_flag_roundtrips_and_lookup_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("peers.toml");
+        let mut peers = Peers::default();
+        peers.upsert(Peer::new("laptop", "id-laptop", &[9u8; 32]));
+
+        assert!(!peers.is_authorized("id-laptop"));
+        let p = peers.find_any_mut("laptop").unwrap();
+        p.authorized = true;
+        p.hostname = Some("laptop.local".into());
+        p.macs = vec!["aa:bb:cc:dd:ee:ff".into()];
+        peers.save_to(&path).unwrap();
+
+        let mut back = Peers::load_from(&path).unwrap();
+        assert!(back.is_authorized("id-laptop"));
+        assert_eq!(
+            back.find_by_id("id-laptop").unwrap().hostname.as_deref(),
+            Some("laptop.local")
+        );
+        assert!(back.find_any_mut("id-laptop").is_some());
     }
 }

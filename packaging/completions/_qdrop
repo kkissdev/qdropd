@@ -17,6 +17,8 @@ _qdrop() {
     _arguments "${_arguments_options[@]}" : \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
@@ -35,6 +37,8 @@ _arguments "${_arguments_options[@]}" : \
 '--remove=[Remove an existing pairing by name]:NAME:_default' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
@@ -47,6 +51,8 @@ _arguments "${_arguments_options[@]}" : \
 '--json[Emit JSON instead of a table]' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
@@ -55,14 +61,56 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (send)
 _arguments "${_arguments_options[@]}" : \
-'--to=[Target peer name. Defaults to all paired peers (or the sole peer)]:NAME:_default' \
+'--to=[Target peer name. Defaults to all connected peers]:NAME:_default' \
+'--name=[Filename to use for stdin (\`-\`). Default \`stdin-<timestamp>.bin\`]:NAME:_default' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
 '--version[Print version]' \
-'*::paths -- Files to send:_files' \
+'*::paths -- Files to send. A single `-` reads the file from stdin:_files' \
+&& ret=0
+;;
+(recv)
+_arguments "${_arguments_options[@]}" : \
+'--timeout=[Give up after this many seconds (default 300)]:SECS:_default' \
+'--stdout[Write the file'\''s contents to stdout instead of leaving it on disk]' \
+'--keep[With \`--stdout\`, keep the file in the download folder too]' \
+'-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(paste)
+_arguments "${_arguments_options[@]}" : \
+'-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+&& ret=0
+;;
+(copy)
+_arguments "${_arguments_options[@]}" : \
+'-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
 && ret=0
 ;;
 (open)
@@ -70,6 +118,8 @@ _arguments "${_arguments_options[@]}" : \
 '--to=[Target peer name]:NAME:_default' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
@@ -85,10 +135,27 @@ _arguments "${_arguments_options[@]}" : \
 '--status[Show clipboard sync status (the default)]' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
 '--version[Print version]' \
+&& ret=0
+;;
+(auth)
+_arguments "${_arguments_options[@]}" : \
+'--remove=[Revoke authorization for this peer]:NAME:_default' \
+'--mutual[Also ask the peer to authorize this machine back]' \
+'-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+'::name -- Peer name or device id to authorize (must be paired and connected):_default' \
 && ret=0
 ;;
 (status)
@@ -97,6 +164,8 @@ _arguments "${_arguments_options[@]}" : \
 '--waybar[Emit a single line of waybar JSON (\`text\` / \`tooltip\` / \`class\`)]' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
@@ -108,6 +177,8 @@ _arguments "${_arguments_options[@]}" : \
 '--port=[Override the listen port from config]:PORT:_default' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
+'-q[Suppress progress/status output (errors still print)]' \
+'--quiet[Suppress progress/status output (errors still print)]' \
 '-h[Print help]' \
 '--help[Print help]' \
 '-V[Print version]' \
@@ -138,11 +209,27 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(recv)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(paste)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(copy)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (open)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
 (clip)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(auth)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
@@ -172,19 +259,33 @@ _qdrop_commands() {
     local commands; commands=(
 'pair:Pair with another device, or manage existing pairings' \
 'peers:List paired peers and their status' \
-'send:Send one or more files to a peer' \
+'send:Send one or more files to a peer (use \`-\` for stdin)' \
+'recv:Wait for an incoming file; print its path or stream it to stdout' \
+'paste:Print a peer'\''s shared clipboard text to stdout' \
+'copy:Read stdin and set it as the shared clipboard' \
 'open:Open a URL on a peer' \
 'clip:Control clipboard synchronization' \
+'auth:Pre-authorize a paired peer to send here unattended' \
 'status:Show live daemon status (peers, clipboard)' \
 'daemon:Run the qdrop daemon in the foreground' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'qdrop commands' commands "$@"
 }
+(( $+functions[_qdrop__subcmd__auth_commands] )) ||
+_qdrop__subcmd__auth_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop auth commands' commands "$@"
+}
 (( $+functions[_qdrop__subcmd__clip_commands] )) ||
 _qdrop__subcmd__clip_commands() {
     local commands; commands=()
     _describe -t commands 'qdrop clip commands' commands "$@"
+}
+(( $+functions[_qdrop__subcmd__copy_commands] )) ||
+_qdrop__subcmd__copy_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop copy commands' commands "$@"
 }
 (( $+functions[_qdrop__subcmd__daemon_commands] )) ||
 _qdrop__subcmd__daemon_commands() {
@@ -196,19 +297,33 @@ _qdrop__subcmd__help_commands() {
     local commands; commands=(
 'pair:Pair with another device, or manage existing pairings' \
 'peers:List paired peers and their status' \
-'send:Send one or more files to a peer' \
+'send:Send one or more files to a peer (use \`-\` for stdin)' \
+'recv:Wait for an incoming file; print its path or stream it to stdout' \
+'paste:Print a peer'\''s shared clipboard text to stdout' \
+'copy:Read stdin and set it as the shared clipboard' \
 'open:Open a URL on a peer' \
 'clip:Control clipboard synchronization' \
+'auth:Pre-authorize a paired peer to send here unattended' \
 'status:Show live daemon status (peers, clipboard)' \
 'daemon:Run the qdrop daemon in the foreground' \
 'help:Print this message or the help of the given subcommand(s)' \
     )
     _describe -t commands 'qdrop help commands' commands "$@"
 }
+(( $+functions[_qdrop__subcmd__help__subcmd__auth_commands] )) ||
+_qdrop__subcmd__help__subcmd__auth_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop help auth commands' commands "$@"
+}
 (( $+functions[_qdrop__subcmd__help__subcmd__clip_commands] )) ||
 _qdrop__subcmd__help__subcmd__clip_commands() {
     local commands; commands=()
     _describe -t commands 'qdrop help clip commands' commands "$@"
+}
+(( $+functions[_qdrop__subcmd__help__subcmd__copy_commands] )) ||
+_qdrop__subcmd__help__subcmd__copy_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop help copy commands' commands "$@"
 }
 (( $+functions[_qdrop__subcmd__help__subcmd__daemon_commands] )) ||
 _qdrop__subcmd__help__subcmd__daemon_commands() {
@@ -230,10 +345,20 @@ _qdrop__subcmd__help__subcmd__pair_commands() {
     local commands; commands=()
     _describe -t commands 'qdrop help pair commands' commands "$@"
 }
+(( $+functions[_qdrop__subcmd__help__subcmd__paste_commands] )) ||
+_qdrop__subcmd__help__subcmd__paste_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop help paste commands' commands "$@"
+}
 (( $+functions[_qdrop__subcmd__help__subcmd__peers_commands] )) ||
 _qdrop__subcmd__help__subcmd__peers_commands() {
     local commands; commands=()
     _describe -t commands 'qdrop help peers commands' commands "$@"
+}
+(( $+functions[_qdrop__subcmd__help__subcmd__recv_commands] )) ||
+_qdrop__subcmd__help__subcmd__recv_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop help recv commands' commands "$@"
 }
 (( $+functions[_qdrop__subcmd__help__subcmd__send_commands] )) ||
 _qdrop__subcmd__help__subcmd__send_commands() {
@@ -255,10 +380,20 @@ _qdrop__subcmd__pair_commands() {
     local commands; commands=()
     _describe -t commands 'qdrop pair commands' commands "$@"
 }
+(( $+functions[_qdrop__subcmd__paste_commands] )) ||
+_qdrop__subcmd__paste_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop paste commands' commands "$@"
+}
 (( $+functions[_qdrop__subcmd__peers_commands] )) ||
 _qdrop__subcmd__peers_commands() {
     local commands; commands=()
     _describe -t commands 'qdrop peers commands' commands "$@"
+}
+(( $+functions[_qdrop__subcmd__recv_commands] )) ||
+_qdrop__subcmd__recv_commands() {
+    local commands; commands=()
+    _describe -t commands 'qdrop recv commands' commands "$@"
 }
 (( $+functions[_qdrop__subcmd__send_commands] )) ||
 _qdrop__subcmd__send_commands() {

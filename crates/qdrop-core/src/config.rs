@@ -24,10 +24,57 @@ pub struct Config {
     pub sync_images: bool,
     /// Largest clipboard payload to sync inline, in bytes.
     pub max_clipboard_bytes: u64,
-    /// Prompt before accepting an incoming file.
-    pub require_confirm: bool,
+    /// When to divert an incoming file/URL for confirmation.
+    /// Accepts `false` / `true` / `"strict"` in `config.toml`.
+    pub require_confirm: ConfirmPolicy,
     /// Default log filter when `--verbose` is not passed (`tracing` syntax).
     pub log_filter: String,
+}
+
+/// When incoming files (M4) and URLs (M5) are held for confirmation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConfirmPolicy {
+    /// Accept everything from any paired peer. (`false`)
+    #[default]
+    Never,
+    /// Accept from peers authorized via `qdrop auth` (M10); divert the rest to
+    /// `~/Downloads/qdrop/pending/`. (`true`)
+    Unlisted,
+    /// Always divert, authorized or not. (`"strict"`)
+    Always,
+}
+
+impl serde::Serialize for ConfirmPolicy {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            ConfirmPolicy::Never => s.serialize_bool(false),
+            ConfirmPolicy::Unlisted => s.serialize_bool(true),
+            ConfirmPolicy::Always => s.serialize_str("strict"),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ConfirmPolicy {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Str(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Bool(false) => Ok(ConfirmPolicy::Never),
+            Raw::Bool(true) => Ok(ConfirmPolicy::Unlisted),
+            Raw::Str(s) => match s.to_ascii_lowercase().as_str() {
+                "never" | "false" => Ok(ConfirmPolicy::Never),
+                "unlisted" | "true" => Ok(ConfirmPolicy::Unlisted),
+                "strict" | "always" => Ok(ConfirmPolicy::Always),
+                other => Err(serde::de::Error::custom(format!(
+                    "require_confirm: expected false / true / \"strict\", got {other:?}"
+                ))),
+            },
+        }
+    }
 }
 
 impl Default for Config {
@@ -38,7 +85,7 @@ impl Default for Config {
             sync_clipboard: true,
             sync_images: true,
             max_clipboard_bytes: 1024 * 1024,
-            require_confirm: false,
+            require_confirm: ConfirmPolicy::Never,
             log_filter: "info".to_string(),
         }
     }
@@ -127,5 +174,27 @@ mod tests {
         let text = cfg.to_toml().unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn confirm_policy_accepts_bool_and_strict() {
+        let p = |s: &str| toml::from_str::<Config>(s).unwrap().require_confirm;
+        assert_eq!(p("require_confirm = false"), ConfirmPolicy::Never);
+        assert_eq!(p("require_confirm = true"), ConfirmPolicy::Unlisted);
+        assert_eq!(p("require_confirm = \"strict\""), ConfirmPolicy::Always);
+        assert_eq!(p("require_confirm = \"unlisted\""), ConfirmPolicy::Unlisted);
+        assert!(toml::from_str::<Config>("require_confirm = \"bogus\"").is_err());
+
+        // Round-trips: Always -> "strict", Unlisted -> true.
+        let c = Config {
+            require_confirm: ConfirmPolicy::Always,
+            ..Config::default()
+        };
+        assert_eq!(
+            toml::from_str::<Config>(&c.to_toml().unwrap())
+                .unwrap()
+                .require_confirm,
+            ConfirmPolicy::Always
+        );
     }
 }

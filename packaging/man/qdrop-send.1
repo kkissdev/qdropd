@@ -2,18 +2,21 @@
 .el .ds Aq '
 .TH send 1  "send " 
 .SH NAME
-send \- Send one or more files to a peer
+send \- Send one or more files to a peer (use `\-` for stdin)
 .SH SYNOPSIS
-\fBqdrop send\fR [\fB\-\-to\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPATH\fR> 
+\fBqdrop send\fR [\fB\-\-to\fR] [\fB\-\-name\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPATH\fR> 
 .SH DESCRIPTION
-Send one or more files to a peer
+Send one or more files to a peer (use `\-` for stdin)
 .SH OPTIONS
 .TP
 \fB\-\-to\fR \fI<NAME>\fR
-Target peer name. Defaults to all paired peers (or the sole peer)
+Target peer name. Defaults to all connected peers
+.TP
+\fB\-\-name\fR \fI<NAME>\fR
+Filename to use for stdin (`\-`). Default `stdin\-<timestamp>.bin`
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help
 .TP
 <\fIPATH\fR>
-Files to send
+Files to send. A single `\-` reads the file from stdin
