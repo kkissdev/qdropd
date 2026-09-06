@@ -3,6 +3,7 @@
 //! logging. Clipboard/file sync logic lives in the daemon.
 
 pub mod config;
+pub mod control;
 pub mod crypto;
 pub mod device;
 pub mod frame;

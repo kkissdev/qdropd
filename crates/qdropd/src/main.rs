@@ -1,15 +1,18 @@
 //! `qdropd` — the long-running daemon.
 //!
-//! M2: mutually-authenticated TLS 1.3 with keys pinned during pairing. Only
-//! peers in `peers.toml` are dialed or accepted; the roster is reloaded when
-//! that file changes, so `qdrop pair` / `qdrop pair --remove` take effect
-//! without a restart.
+//! M2: mutually-authenticated TLS 1.3, keys pinned during pairing.
+//! M3: bidirectional clipboard **text** sync + a control socket for
+//! `qdrop clip --pause/--resume/--status`.
 
 mod backoff;
+mod bus;
+mod clipboard;
 mod connection;
+mod control;
 mod discovery;
 mod secure;
 mod state;
+mod sync;
 mod transport;
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -18,11 +21,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use qdrop_core::proto::{Caps, Hello, PROTOCOL_VERSION};
+use qdrop_core::proto::{Caps, Hello, Message, PROTOCOL_VERSION};
 use qdrop_core::{Config, Identity, Peers, Roster};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
+use crate::bus::PeerBus;
+use crate::control::Controls;
 use crate::transport::{TransportConfig, TransportEvent};
 
 #[derive(Debug, Parser)]
@@ -110,18 +115,39 @@ fn real_main() -> Result<()> {
         let (roster_tx, roster_rx) = watch::channel(());
         spawn_roster_reload(roster.clone(), roster_tx);
 
+        let bus = PeerBus::new();
+        let controls = Arc::new(Controls::default());
+        let (hub_tx, hub_rx) = tokio::sync::mpsc::channel::<(String, Message)>(64);
+
         let (ev_tx, ev_rx) = tokio::sync::mpsc::channel::<TransportEvent>(64);
         let manager = transport::spawn(
             TransportConfig::new(local, identity.clone(), roster, server_config),
             listener,
             discovery_rx,
             roster_rx,
+            bus.clone(),
+            hub_tx,
             Some(ev_tx),
         );
 
+        sync::spawn(
+            &config,
+            device_id.clone(),
+            bus.clone(),
+            hub_rx,
+            controls.clone(),
+        );
+        let control = match control::spawn(controls.clone(), bus.clone()) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                tracing::warn!("control socket unavailable: {e:#}");
+                None
+            }
+        };
+
         tracing::info!(
             port = bound_port,
-            "listening; advertising over mDNS (TLS 1.3, pinned keys)"
+            "listening; advertising over mDNS (TLS 1.3, pinned keys); clipboard sync active"
         );
 
         let events = tokio::spawn(state::publish_events(ev_rx));
@@ -131,6 +157,10 @@ fn real_main() -> Result<()> {
 
         manager.abort();
         events.abort();
+        if let Some(c) = control {
+            c.abort();
+        }
+        let _ = std::fs::remove_file(control::socket_path().unwrap_or_default());
         discovery.shutdown();
         Ok(())
     })

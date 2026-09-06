@@ -29,6 +29,7 @@ rcgen.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 mdns-sd.workspace = true
+serde_bytes.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

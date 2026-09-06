@@ -12,18 +12,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use qdrop_core::identity::Identity;
-use qdrop_core::proto::{Caps, Hello};
+use qdrop_core::proto::{Caps, Hello, Message};
 use qdrop_core::roster::Roster;
 use rustls::ServerConfig;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use crate::backoff::Backoff;
+use crate::bus::PeerBus;
 use crate::connection::{self, handshake, DisconnectReason, KeepAlive};
 use crate::discovery::{DiscoveredPeer, DiscoveryEvent};
 use crate::secure;
+
+/// Inbound application frames from any peer: `(peer_id, message)`.
+pub type Hub = mpsc::Sender<(String, Message)>;
 
 /// Observability hook — one event per connection state change.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,14 +87,25 @@ fn never() -> watch::Receiver<()> {
 
 /// Start the manager. Abort the returned handle (or drop the runtime) to stop.
 /// `roster_changed` fires after the shared roster is reloaded from disk.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     cfg: TransportConfig,
     listener: TcpListener,
     discovery_rx: mpsc::Receiver<DiscoveryEvent>,
     roster_changed: watch::Receiver<()>,
+    bus: PeerBus,
+    hub: Hub,
     events: Option<mpsc::Sender<TransportEvent>>,
 ) -> JoinHandle<()> {
-    tokio::spawn(manager(cfg, listener, discovery_rx, roster_changed, events))
+    tokio::spawn(manager(
+        cfg,
+        listener,
+        discovery_rx,
+        roster_changed,
+        bus,
+        hub,
+        events,
+    ))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,11 +135,44 @@ enum Internal {
         peer_id: String,
         device_name: String,
         caps: Caps,
+        outbound: mpsc::Sender<Message>,
     },
     ConnDown {
         peer_id: String,
         reason: DisconnectReason,
     },
+}
+
+/// Wire up a freshly-handshaked stream: announce it, run it, announce its end.
+async fn drive_connection<S>(
+    stream: S,
+    peer_id: String,
+    device_name: String,
+    caps: Caps,
+    ka: KeepAlive,
+    hub: Hub,
+    internal_tx: mpsc::Sender<Internal>,
+) where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+{
+    let (out_tx, out_rx) = mpsc::channel::<Message>(64);
+    let _ = internal_tx
+        .send(Internal::ConnUp {
+            peer_id: peer_id.clone(),
+            device_name,
+            caps,
+            outbound: out_tx,
+        })
+        .await;
+    let wire = connection::Wire {
+        peer_id: peer_id.clone(),
+        inbound: hub,
+        outbound: out_rx,
+    };
+    let reason = connection::run(stream, ka, wire).await;
+    let _ = internal_tx
+        .send(Internal::ConnDown { peer_id, reason })
+        .await;
 }
 
 struct PeerEntry {
@@ -148,11 +197,14 @@ impl PeerEntry {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn manager(
     cfg: TransportConfig,
     listener: TcpListener,
     discovery_rx: mpsc::Receiver<DiscoveryEvent>,
     roster_changed: watch::Receiver<()>,
+    bus: PeerBus,
+    hub: Hub,
     events: Option<mpsc::Sender<TransportEvent>>,
 ) {
     let own_id = cfg.local.device_id.clone();
@@ -175,7 +227,7 @@ async fn manager(
                     tracing::debug!(peer = %p.device_id, "ignoring unpaired peer");
                     continue;
                 }
-                ensure_peer(&cfg, &own_id, &internal_tx, &mut peers, &p);
+                ensure_peer(&cfg, &own_id, &internal_tx, &hub, &mut peers, &p);
             }
             Internal::Discovery(DiscoveryEvent::Lost { device_id }) => {
                 discovered.remove(&device_id);
@@ -195,6 +247,7 @@ async fn manager(
                     .cloned()
                     .collect();
                 for id in dropped {
+                    bus.remove(&id);
                     if let Some(mut entry) = peers.remove(&id) {
                         if let Some(t) = entry.task.take() {
                             t.abort();
@@ -215,7 +268,7 @@ async fn manager(
                 // Start dialing peers that just became trusted.
                 for p in discovered.values().cloned().collect::<Vec<_>>() {
                     if cfg.roster.read().is_trusted_id(&p.device_id) {
-                        ensure_peer(&cfg, &own_id, &internal_tx, &mut peers, &p);
+                        ensure_peer(&cfg, &own_id, &internal_tx, &hub, &mut peers, &p);
                     }
                 }
             }
@@ -245,37 +298,28 @@ async fn manager(
                     }
                 }
 
-                let ka = cfg.keepalive;
-                let tx = internal_tx.clone();
-                let pid = peer_id.clone();
-                let name = peer.device_name.clone();
-                let task = tokio::spawn(async move {
-                    let _ = tx
-                        .send(Internal::ConnUp {
-                            peer_id: pid.clone(),
-                            device_name: name,
-                            caps,
-                        })
-                        .await;
-                    let reason = connection::run(stream, ka).await;
-                    let _ = tx
-                        .send(Internal::ConnDown {
-                            peer_id: pid,
-                            reason,
-                        })
-                        .await;
-                });
+                let task = tokio::spawn(drive_connection(
+                    stream,
+                    peer_id.clone(),
+                    peer.device_name.clone(),
+                    caps,
+                    cfg.keepalive,
+                    hub.clone(),
+                    internal_tx.clone(),
+                ));
                 entry.task = Some(task);
             }
             Internal::ConnUp {
                 peer_id,
                 device_name,
                 caps,
+                outbound,
             } => {
                 if let Some(entry) = peers.get_mut(&peer_id) {
                     entry.connected = true;
                     entry.device_name = device_name.clone();
                 }
+                bus.insert(peer_id.clone(), outbound);
                 tracing::info!(peer = %peer_id, caps = ?caps, "peer connected");
                 emit(
                     &events,
@@ -288,6 +332,7 @@ async fn manager(
                 .await;
             }
             Internal::ConnDown { peer_id, reason } => {
+                bus.remove(&peer_id);
                 if let Some(entry) = peers.get_mut(&peer_id) {
                     entry.connected = false;
                     if entry.role == Role::Acceptor {
@@ -314,6 +359,7 @@ fn ensure_peer(
     cfg: &TransportConfig,
     own_id: &str,
     internal_tx: &mpsc::Sender<Internal>,
+    hub: &Hub,
     peers: &mut HashMap<String, PeerEntry>,
     p: &DiscoveredPeer,
 ) {
@@ -334,6 +380,7 @@ fn ensure_peer(
                     p.device_id.clone(),
                     cfg.clone(),
                     rx,
+                    hub.clone(),
                     internal_tx.clone(),
                 )));
                 tracing::info!(peer = %p.device_id, name = %p.device_name, "discovered paired peer (we dial)");
@@ -439,6 +486,7 @@ async fn dial_loop(
     peer_id: String,
     cfg: TransportConfig,
     mut addrs_rx: watch::Receiver<Vec<SocketAddr>>,
+    hub: Hub,
     internal_tx: mpsc::Sender<Internal>,
 ) {
     let mut backoff = Backoff::new(cfg.backoff_base, cfg.backoff_max);
@@ -448,7 +496,7 @@ async fn dial_loop(
         let expect = cfg.roster.read().key_for_id(&peer_id);
         match (addrs.is_empty(), expect) {
             (false, Some(expect)) => {
-                if dial_once(&addrs, expect, &peer_id, &cfg, &internal_tx).await {
+                if dial_once(&addrs, expect, &peer_id, &cfg, &hub, &internal_tx).await {
                     backoff.reset();
                 }
             }
@@ -475,11 +523,13 @@ async fn dial_loop(
 
 /// One pass over a peer's candidate addresses. Returns `true` if a connection
 /// was established (and has since ended).
+#[allow(clippy::too_many_arguments)]
 async fn dial_once(
     addrs: &[SocketAddr],
     expect: [u8; 32],
     peer_id: &str,
     cfg: &TransportConfig,
+    hub: &Hub,
     internal_tx: &mpsc::Sender<Internal>,
 ) -> bool {
     for &addr in addrs {
@@ -526,20 +576,16 @@ async fn dial_once(
             }
         };
 
-        let _ = internal_tx
-            .send(Internal::ConnUp {
-                peer_id: peer_id.to_string(),
-                device_name: hs.peer.device_name.clone(),
-                caps: hs.effective_caps,
-            })
-            .await;
-        let reason = connection::run(stream, cfg.keepalive).await;
-        let _ = internal_tx
-            .send(Internal::ConnDown {
-                peer_id: peer_id.to_string(),
-                reason,
-            })
-            .await;
+        drive_connection(
+            stream,
+            peer_id.to_string(),
+            hs.peer.device_name.clone(),
+            hs.effective_caps,
+            cfg.keepalive,
+            hub.clone(),
+            internal_tx.clone(),
+        )
+        .await;
         return true;
     }
     false
@@ -624,7 +670,16 @@ mod tests {
         let our_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (disco_tx, disco_rx) = mpsc::channel(8);
         let (ev_tx, mut ev_rx) = mpsc::channel(16);
-        let mgr = spawn(cfg, our_listener, disco_rx, never(), Some(ev_tx));
+        let (hub_tx, _hub_rx) = mpsc::channel(16);
+        let mgr = spawn(
+            cfg,
+            our_listener,
+            disco_rx,
+            never(),
+            PeerBus::new(),
+            hub_tx,
+            Some(ev_tx),
+        );
 
         disco_tx
             .send(DiscoveryEvent::Found(DiscoveredPeer {
@@ -682,7 +737,16 @@ mod tests {
         let cfg = fast_cfg(hello(LOW), us.clone(), Roster::new());
         let our_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (disco_tx, disco_rx) = mpsc::channel(8);
-        let mgr = spawn(cfg, our_listener, disco_rx, never(), None);
+        let (hub_tx, _hub_rx) = mpsc::channel(16);
+        let mgr = spawn(
+            cfg,
+            our_listener,
+            disco_rx,
+            never(),
+            PeerBus::new(),
+            hub_tx,
+            None,
+        );
 
         disco_tx
             .send(DiscoveryEvent::Found(DiscoveredPeer {

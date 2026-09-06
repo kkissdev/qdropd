@@ -4,11 +4,10 @@ Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linu
 
 ## Status
 
-Milestone **M2** — pairing + authenticated transport. `qdrop pair` establishes
-trust once via a 6-digit PIN (SPAKE2); every connection after that is TLS 1.3
-with the peer's Ed25519 key pinned (no CA, no TOFU). Unknown keys are refused;
-`qdrop pair --remove` unpairs. `qdrop peers` shows online / last-seen. Clipboard
-and file sync are still ahead (see [`MILESTONES.md`](MILESTONES.md)).
+Milestone **M3** — bidirectional clipboard **text** sync between paired
+devices (macOS + Wayland), echo-loop safe, with `qdrop clip --pause/--resume/
+--status`. Built on M2's pinned-key TLS. File send, images, and URL push are
+still ahead (see [`MILESTONES.md`](MILESTONES.md)).
 
 ## Layout
 

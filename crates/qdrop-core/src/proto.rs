@@ -64,6 +64,35 @@ pub struct Hello {
     pub caps: Caps,
 }
 
+/// MIME type for the plain-text clipboard entry (M3).
+pub const MIME_TEXT: &str = "text/plain;charset=utf-8";
+
+/// One typed payload in a clipboard update.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipEntry {
+    pub mime: String,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+}
+
+impl ClipEntry {
+    pub fn text(s: &str) -> Self {
+        Self {
+            mime: MIME_TEXT.to_string(),
+            data: s.as_bytes().to_vec(),
+        }
+    }
+
+    /// The entry's text, if it is a text MIME type and valid UTF-8.
+    pub fn as_text(&self) -> Option<&str> {
+        if self.mime.starts_with("text/") {
+            std::str::from_utf8(&self.data).ok()
+        } else {
+            None
+        }
+    }
+}
+
 /// Every frame on the wire.
 ///
 /// `#[serde(tag = "t")]` gives a self-describing, forward-compatible encoding:
@@ -73,8 +102,19 @@ pub struct Hello {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Message {
     Hello(Hello),
-    Ping { seq: u64 },
-    Pong { seq: u64 },
+    Ping {
+        seq: u64,
+    },
+    Pong {
+        seq: u64,
+    },
+    /// A clipboard update. `origin_id` is the device the copy happened on and
+    /// `seq` is monotonic per origin — together they let receivers drop echoes.
+    Clipboard {
+        seq: u64,
+        origin_id: String,
+        entries: Vec<ClipEntry>,
+    },
 }
 
 #[cfg(test)]
@@ -110,10 +150,26 @@ mod tests {
             }),
             Message::Ping { seq: 7 },
             Message::Pong { seq: 7 },
+            Message::Clipboard {
+                seq: 42,
+                origin_id: "dev".into(),
+                entries: vec![ClipEntry::text("hello \u{1f600}")],
+            },
         ] {
             let bytes = rmp_serde::to_vec_named(&msg).unwrap();
             let back: Message = rmp_serde::from_slice(&bytes).unwrap();
             assert_eq!(msg, back);
         }
+    }
+
+    #[test]
+    fn clip_entry_text_helpers() {
+        let e = ClipEntry::text("hi");
+        assert_eq!(e.as_text(), Some("hi"));
+        let bin = ClipEntry {
+            mime: "image/png".into(),
+            data: vec![1, 2, 3],
+        };
+        assert_eq!(bin.as_text(), None);
     }
 }

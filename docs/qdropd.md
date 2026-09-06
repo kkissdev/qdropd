@@ -105,6 +105,19 @@ the log level:
 
 ---
 
+## Clipboard sync (M3)
+
+Text copied on one paired device appears on the others. macOS and Wayland
+(wlr-data-control) are both supported via `arboard`; a headless server with no
+clipboard logs a warning and carries on.
+
+- Echo-loop safe: writes are tagged with an origin id + monotonic seq, and the
+  poller ignores the change its own write produced.
+- `max_clipboard_bytes` (config) caps what is synced inline.
+- `qdrop clip --pause` / `--resume` / `--status` — talks to the daemon over a
+  Unix socket (`$XDG_RUNTIME_DIR/qdropd.sock`, else `<config dir>/qdropd.sock`;
+  override with `QDROP_CONTROL_SOCK`).
+
 ## What it does today
 
 Through M2 (discovery + authenticated transport):

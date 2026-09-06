@@ -23,6 +23,9 @@ mdns-sd.workspace = true
 fastrand.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
+arboard.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

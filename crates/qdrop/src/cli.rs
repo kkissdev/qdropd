@@ -71,20 +71,38 @@ pub struct OpenArgs {
     pub to: Option<String>,
 }
 
+/// Control clipboard sync. With no flag, prints status.
 #[derive(Debug, clap::Args)]
+#[group(multiple = false)]
 pub struct ClipArgs {
-    #[command(subcommand)]
-    pub action: ClipAction,
+    /// Pause clipboard sync.
+    #[arg(long)]
+    pub pause: bool,
+    /// Resume clipboard sync.
+    #[arg(long)]
+    pub resume: bool,
+    /// Show clipboard sync status (the default).
+    #[arg(long)]
+    pub status: bool,
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Clone, Copy)]
 pub enum ClipAction {
-    /// Pause clipboard sync.
     Pause,
-    /// Resume clipboard sync.
     Resume,
-    /// Show clipboard sync status.
     Status,
+}
+
+impl ClipArgs {
+    pub fn action(&self) -> ClipAction {
+        if self.pause {
+            ClipAction::Pause
+        } else if self.resume {
+            ClipAction::Resume
+        } else {
+            ClipAction::Status
+        }
+    }
 }
 
 #[derive(Debug, clap::Args)]

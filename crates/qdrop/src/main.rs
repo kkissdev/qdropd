@@ -32,7 +32,7 @@ fn run() -> Result<()> {
         Command::Pair(args) => cmd_pair(&args, cli.verbose),
         Command::Send(args) => cmd_send(&args),
         Command::Open(args) => cmd_open(&args),
-        Command::Clip(args) => cmd_clip(&args.action),
+        Command::Clip(args) => cmd_clip(args.action()),
         Command::Daemon(args) => cmd_daemon(&args, cli.verbose),
     }
 }
@@ -227,13 +227,39 @@ fn cmd_open(args: &cli::OpenArgs) -> Result<()> {
     not_yet("open", "M5")
 }
 
-fn cmd_clip(action: &ClipAction) -> Result<()> {
-    let name = match action {
-        ClipAction::Pause => "clip --pause",
-        ClipAction::Resume => "clip --resume",
-        ClipAction::Status => "clip --status",
+fn cmd_clip(action: ClipAction) -> Result<()> {
+    let cmd = match action {
+        ClipAction::Pause => "clip_pause",
+        ClipAction::Resume => "clip_resume",
+        ClipAction::Status => "clip_status",
     };
-    not_yet(name, "M3")
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting async runtime")?;
+    let resp = rt.block_on(qdrop_core::control::request(cmd))?;
+
+    let paused = resp
+        .get("clipboard_paused")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let connected = resp
+        .get("connected")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
+    match action {
+        ClipAction::Pause => println!("Clipboard sync paused."),
+        ClipAction::Resume => println!("Clipboard sync resumed."),
+        ClipAction::Status => {
+            println!(
+                "Clipboard sync: {}",
+                if paused { "paused" } else { "active" }
+            );
+            println!("Connected peers: {connected}");
+        }
+    }
+    Ok(())
 }
 
 fn not_yet(what: &str, milestone: &str) -> Result<()> {

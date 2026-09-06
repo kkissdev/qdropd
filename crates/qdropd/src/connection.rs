@@ -7,6 +7,8 @@
 use std::time::Duration;
 
 use qdrop_core::frame::{read_message, write_message};
+#[cfg(test)]
+use qdrop_core::proto::ClipEntry;
 use qdrop_core::proto::{Caps, Hello, Message, PROTOCOL_VERSION};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
@@ -121,14 +123,23 @@ where
     .map_err(|_| HandshakeError::Timeout)?
 }
 
-/// Run the keepalive loop until the connection ends. Assumes the handshake
-/// has already completed on `stream`.
+/// Application-facing wiring for a live connection: non-keepalive frames from
+/// the peer go out on `inbound`, and anything pushed to `outbound` is written
+/// to the peer.
+pub struct Wire {
+    pub peer_id: String,
+    pub inbound: mpsc::Sender<(String, Message)>,
+    pub outbound: mpsc::Receiver<Message>,
+}
+
+/// Run the keepalive + application loop until the connection ends. Assumes the
+/// handshake has already completed on `stream`.
 ///
 /// Frame reads happen in a dedicated task: `read_message` is not
 /// cancellation-safe (it can consume a length prefix without its body), so it
 /// must never sit in a `select!` arm. The task forwards decoded frames over a
 /// channel, and `recv` *is* cancel-safe.
-pub async fn run<S>(stream: S, ka: KeepAlive) -> DisconnectReason
+pub async fn run<S>(stream: S, ka: KeepAlive, mut wire: Wire) -> DisconnectReason
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
@@ -172,6 +183,16 @@ where
                     break DisconnectReason::WriteError;
                 }
             }
+            out = wire.outbound.recv() => {
+                match out {
+                    Some(msg) => {
+                        if write_message(&mut wr, &msg).await.is_err() {
+                            break DisconnectReason::WriteError;
+                        }
+                    }
+                    None => break DisconnectReason::PeerClosed, // app side gone
+                }
+            }
             frame = frames_rx.recv() => {
                 match frame {
                     None => break DisconnectReason::PeerClosed,
@@ -188,6 +209,12 @@ where
                             Message::Pong { .. } => {}
                             Message::Hello(_) => {
                                 tracing::warn!("unexpected Hello mid-connection, ignoring");
+                            }
+                            other => {
+                                // Application frame — hand it to the subsystem.
+                                if wire.inbound.send((wire.peer_id.clone(), other)).await.is_err() {
+                                    break DisconnectReason::PeerClosed;
+                                }
                             }
                         }
                     }
@@ -254,6 +281,24 @@ mod tests {
         let _ = ha.await;
     }
 
+    fn test_wire() -> (
+        Wire,
+        mpsc::Receiver<(String, Message)>,
+        mpsc::Sender<Message>,
+    ) {
+        let (in_tx, in_rx) = mpsc::channel(16);
+        let (out_tx, out_rx) = mpsc::channel(16);
+        (
+            Wire {
+                peer_id: "peer".into(),
+                inbound: in_tx,
+                outbound: out_rx,
+            },
+            in_rx,
+            out_tx,
+        )
+    }
+
     #[tokio::test(start_paused = true)]
     async fn run_exchanges_keepalive_then_notices_idle() {
         let (client, server) = tokio::io::duplex(8192);
@@ -278,7 +323,8 @@ mod tests {
             std::future::pending::<()>().await;
         });
 
-        let reason = run(client, ka).await;
+        let (wire, _in_rx, _out_tx) = test_wire();
+        let reason = run(client, ka, wire).await;
         assert_eq!(reason, DisconnectReason::IdleTimeout);
         server.abort();
     }
@@ -287,9 +333,50 @@ mod tests {
     async fn run_reports_peer_closed() {
         let (client, server) = tokio::io::duplex(8192);
         drop(server);
+        let (wire, _in_rx, _out_tx) = test_wire();
         assert_eq!(
-            run(client, KeepAlive::default()).await,
+            run(client, KeepAlive::default(), wire).await,
             DisconnectReason::PeerClosed
         );
+    }
+
+    #[tokio::test]
+    async fn run_relays_application_frames_both_ways() {
+        let (client, server) = tokio::io::duplex(8192);
+        let (wire, mut in_rx, out_tx) = test_wire();
+        let h = tokio::spawn(run(client, KeepAlive::default(), wire));
+
+        let (mut srd, mut swr) = tokio::io::split(server);
+        // peer -> us
+        write_message(
+            &mut swr,
+            &Message::Clipboard {
+                seq: 1,
+                origin_id: "x".into(),
+                entries: vec![ClipEntry::text("hi")],
+            },
+        )
+        .await
+        .unwrap();
+        let (pid, msg) = in_rx.recv().await.unwrap();
+        assert_eq!(pid, "peer");
+        assert!(matches!(msg, Message::Clipboard { seq: 1, .. }));
+
+        // us -> peer
+        out_tx
+            .send(Message::Clipboard {
+                seq: 2,
+                origin_id: "y".into(),
+                entries: vec![],
+            })
+            .await
+            .unwrap();
+        match read_message(&mut srd).await.unwrap() {
+            Message::Clipboard { seq, .. } => assert_eq!(seq, 2),
+            other => panic!("got {other:?}"),
+        }
+        drop(out_tx);
+        drop(in_rx);
+        h.abort();
     }
 }
