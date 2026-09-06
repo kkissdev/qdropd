@@ -219,6 +219,7 @@ fn real_main() -> Result<()> {
             filex: filex.clone(),
             auth: auth.clone(),
             clipboard,
+            port: bound_port,
         }) {
             Ok(h) => Some(h),
             Err(e) => {

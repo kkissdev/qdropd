@@ -44,8 +44,17 @@ pub enum Command {
     Auth(AuthArgs),
     /// Show live daemon status (peers, clipboard).
     Status(StatusArgs),
+    /// Diagnose why sync isn't working.
+    Doctor(DoctorArgs),
     /// Run the qdrop daemon in the foreground.
     Daemon(DaemonArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct DoctorArgs {
+    /// Emit the checks as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Pre-authorize a peer as an unattended sender. With no argument, lists which

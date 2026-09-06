@@ -50,6 +50,7 @@ pub struct ControlDeps {
     pub filex: Arc<FileXfer>,
     pub auth: Arc<AuthManager>,
     pub clipboard: Option<Arc<ClipboardHandle>>,
+    pub port: u16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -216,6 +217,7 @@ fn status_json(deps: &ControlDeps) -> serde_json::Value {
     json!({
         "ok": true,
         "version": qdrop_core::VERSION,
+        "port": deps.port,
         "clipboard_paused": deps.controls.clipboard_paused(),
         "sync_images": deps.controls.sync_images(),
         "connected": connected,

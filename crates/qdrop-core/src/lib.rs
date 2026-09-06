@@ -6,6 +6,7 @@ pub mod config;
 pub mod control;
 pub mod crypto;
 pub mod device;
+pub mod doctor;
 pub mod frame;
 pub mod identity;
 pub mod logging;

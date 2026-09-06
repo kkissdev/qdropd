@@ -38,6 +38,7 @@ fn run() -> Result<()> {
         Command::Clip(args) => cmd_clip(args.action()),
         Command::Auth(args) => cmd_auth(&args),
         Command::Status(args) => cmd_status(&args),
+        Command::Doctor(args) => cmd_doctor(&args),
         Command::Daemon(args) => cmd_daemon(&args, cli.verbose),
     }
 }
@@ -504,6 +505,38 @@ fn cmd_auth(args: &cli::AuthArgs) -> Result<()> {
                 .unwrap_or("failed")
         )
     }
+}
+
+fn cmd_doctor(args: &cli::DoctorArgs) -> Result<()> {
+    use qdrop_core::doctor::Status;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting async runtime")?;
+    let checks = rt.block_on(qdrop_core::doctor::run());
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&checks)?);
+    } else {
+        for c in &checks {
+            let mark = match c.status {
+                Status::Ok => "\x1b[32m✓\x1b[0m",
+                Status::Warn => "\x1b[33m!\x1b[0m",
+                Status::Fail => "\x1b[31m✗\x1b[0m",
+            };
+            println!("{mark} {:<16} {}", c.name, c.detail);
+            if let Some(fix) = &c.fix {
+                println!("  \x1b[2m→ {fix}\x1b[0m");
+            }
+        }
+    }
+
+    let bad = checks.iter().any(|c| c.status == Status::Fail);
+    if bad {
+        anyhow::bail!("one or more checks failed");
+    }
+    Ok(())
 }
 
 fn cmd_status(args: &cli::StatusArgs) -> Result<()> {
