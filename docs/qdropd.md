@@ -146,6 +146,14 @@ distinct entries — text and images, newest first, with the source device.
 pushes it to a peer. Concealed / transient items are never recorded; the ring
 is cached under `~/.config/qdrop/history/` and survives a restart.
 
+## End-to-end tests (M17)
+
+`crates/qdrop/tests/e2e.rs` spins up two real `qdropd` instances and drives
+them through the CLI — pair, file send + SHA verify, `require_confirm` +
+`qdrop auth` bypass, stdin send, URL push + allowlist, clipboard propagation,
+kill/reconnect, unpair. Marked `#[ignore]`; the CI **e2e** job runs it on
+Linux (under `xvfb`) and macOS in ~35s.
+
 ## `qdrop doctor` (M16)
 
 `qdrop doctor` runs a checklist — config, identity, daemon, listen port, mDNS

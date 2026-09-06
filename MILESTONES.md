@@ -2,8 +2,8 @@
 
 Derived from [`qdropdesign.md`](qdropdesign.md). Each milestone is independently
 demoable and ordered so the daily-driver cut (M1–M6) lands first, with hardening
-and polish after. **Implemented:** M0–M10, M13, M14, M16.
-**Planned:** M11–M12, M15, M17–M21.
+and polish after. **Implemented:** M0–M10, M13, M14, M16, M17.
+**Planned:** M11–M12, M15, M18–M21.
 
 ---
 
