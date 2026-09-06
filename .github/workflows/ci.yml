@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  test:
+    name: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features
+
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            native: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            native: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            native: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace --release --target ${{ matrix.target }}
+      - name: Smoke-test the artifacts
+        if: matrix.native
+        run: |
+          ./target/${{ matrix.target }}/release/qdrop --help
+          ./target/${{ matrix.target }}/release/qdrop --version
+          ./target/${{ matrix.target }}/release/qdropd --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qdrop-${{ matrix.target }}
+          path: |
+            target/${{ matrix.target }}/release/qdrop
+            target/${{ matrix.target }}/release/qdropd
+          if-no-files-found: error

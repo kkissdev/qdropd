@@ -1,0 +1,20 @@
+[package]
+name = "qdropd"
+description = "The qdrop daemon: discovery, transport, clipboard sync, and file transfer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "qdropd"
+path = "src/main.rs"
+
+[dependencies]
+qdrop-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true

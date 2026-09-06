@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/qdrop-core", "crates/qdrop", "crates/qdropd"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+authors = ["Kevin Kiss <kevin@sysrex.com>"]
+repository = "https://github.com/sysrex/qdropd"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "time", "sync"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+qdrop-core = { path = "crates/qdrop-core" }
+
+[profile.release]
+strip = true
+lto = "thin"
