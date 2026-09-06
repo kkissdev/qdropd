@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/qdrop-core", "crates/qdrop", "crates/qdropd"]
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.1"

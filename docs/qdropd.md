@@ -118,6 +118,15 @@ clipboard logs a warning and carries on.
   Unix socket (`$XDG_RUNTIME_DIR/qdropd.sock`, else `<config dir>/qdropd.sock`;
   override with `QDROP_CONTROL_SOCK`).
 
+## Resilience (M9)
+
+The daemon caches each peer's last-known address in `state.json` and dials it
+immediately on startup, before mDNS re-resolves — so a network transition
+(Wi-Fi↔ethernet, VPN, sleep/wake) recovers on the existing backoff loop with
+no manual step. Clipboard broadcasts are rate-limited; incoming transfers are
+capped (16 concurrent, 64 MiB in-memory). The frame parser and blob
+reassembly are fuzzed in CI. Threat model: [`threat-model.md`](threat-model.md).
+
 ## Status & control (M7)
 
 `qdrop status` shows peers (online/offline) and clipboard state from the live

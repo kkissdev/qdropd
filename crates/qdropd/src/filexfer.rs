@@ -39,6 +39,8 @@ pub struct SendOutcome {
 
 /// Cap on an in-memory (clipboard-image) blob.
 const MAX_MEM_BLOB: u64 = 64 * 1024 * 1024;
+/// Cap on concurrent incoming transfers (across all peers).
+const MAX_CONCURRENT_INCOMING: usize = 16;
 
 pub struct FileXfer {
     bus: PeerBus,
@@ -69,6 +71,7 @@ struct Incoming {
     written: u64,
     declared: u64,
     peer: String,
+    started: std::time::Instant,
 }
 
 impl FileXfer {
@@ -129,6 +132,11 @@ impl FileXfer {
         size: u64,
         purpose: BlobPurpose,
     ) {
+        if self.incoming.lock().await.len() >= MAX_CONCURRENT_INCOMING {
+            self.reject(&peer_id, id, "too many concurrent transfers")
+                .await;
+            return;
+        }
         let (name, sink) = match purpose {
             BlobPurpose::ClipboardImage => {
                 if self.clip_sink.is_none() {
@@ -186,6 +194,7 @@ impl FileXfer {
                 written: 0,
                 declared: size,
                 peer: peer_id,
+                started: std::time::Instant::now(),
             },
         );
     }
@@ -279,7 +288,15 @@ impl FileXfer {
                         .await;
                     return;
                 }
-                tracing::info!(peer = %inc.peer, path = %dest.display(), bytes = inc.written, "file received");
+                let secs = inc.started.elapsed().as_secs_f64().max(0.001);
+                let mbps = (inc.written as f64 / 1.0e6) / secs;
+                tracing::info!(
+                    peer = %inc.peer,
+                    path = %dest.display(),
+                    bytes = inc.written,
+                    mb_per_s = format_args!("{mbps:.1}"),
+                    "file received"
+                );
                 self.bus.send_to(
                     &peer_id,
                     Message::BlobAck {

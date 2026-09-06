@@ -60,7 +60,8 @@ pub fn start(
     device_id: &str,
     device_name: &str,
     advertise_port: u16,
-) -> Result<(Discovery, mpsc::Receiver<DiscoveryEvent>)> {
+    tx: mpsc::Sender<DiscoveryEvent>,
+) -> Result<Discovery> {
     let daemon = ServiceDaemon::new().context("starting mDNS daemon")?;
 
     let mut txt = HashMap::new();
@@ -81,7 +82,6 @@ pub fn start(
         .browse(SERVICE_TYPE)
         .context("starting mDNS browse")?;
 
-    let (tx, rx) = mpsc::channel(64);
     let own_id = device_id.to_string();
 
     tokio::spawn(async move {
@@ -124,7 +124,7 @@ pub fn start(
         tracing::debug!("discovery browse loop ended");
     });
 
-    Ok((Discovery { daemon, fullname }, rx))
+    Ok(Discovery { daemon, fullname })
 }
 
 /// Extract our peer record from a resolved service, or `None` if it is us or

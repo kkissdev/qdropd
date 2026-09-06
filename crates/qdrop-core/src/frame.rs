@@ -125,6 +125,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn arbitrary_bytes_never_panic() {
+        // A cheap stand-in for the fuzz target: many pseudo-random inputs must
+        // all resolve to Ok/Err without panicking.
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        for _ in 0..2000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let len = (seed >> 24) as usize % 512;
+            let bytes: Vec<u8> = (0..len)
+                .map(|i| {
+                    let x = seed.wrapping_add(i as u64).wrapping_mul(0xff51afd7ed558ccd);
+                    (x >> 33) as u8
+                })
+                .collect();
+            let mut cur = std::io::Cursor::new(bytes);
+            for _ in 0..8 {
+                if read_message(&mut cur).await.is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn oversize_length_is_rejected() {
         let (mut a, mut b) = tokio::io::duplex(1024);
         tokio::spawn(async move {

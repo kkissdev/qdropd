@@ -2,6 +2,8 @@
 
 Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linux/Omarchy).
 End-to-end encrypted (TLS 1.3, keys pinned at pairing), LAN-only, no account, no relay.
+All nine milestones from [`MILESTONES.md`](MILESTONES.md) are implemented; see
+[`docs/threat-model.md`](docs/threat-model.md).
 
 ## 60-second setup
 

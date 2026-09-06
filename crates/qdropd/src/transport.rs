@@ -37,6 +37,8 @@ pub enum TransportEvent {
         device_id: String,
         device_name: String,
         caps: Caps,
+        /// The address we dialed, when we were the dialer.
+        addr: Option<String>,
     },
     PeerDisconnected {
         device_id: String,
@@ -135,6 +137,7 @@ enum Internal {
         peer_id: String,
         device_name: String,
         caps: Caps,
+        addr: Option<String>,
         outbound: mpsc::Sender<Message>,
     },
     ConnDown {
@@ -144,11 +147,13 @@ enum Internal {
 }
 
 /// Wire up a freshly-handshaked stream: announce it, run it, announce its end.
+#[allow(clippy::too_many_arguments)]
 async fn drive_connection<S>(
     stream: S,
     peer_id: String,
     device_name: String,
     caps: Caps,
+    addr: Option<String>,
     ka: KeepAlive,
     hub: Hub,
     internal_tx: mpsc::Sender<Internal>,
@@ -161,6 +166,7 @@ async fn drive_connection<S>(
             peer_id: peer_id.clone(),
             device_name,
             caps,
+            addr,
             outbound: out_tx,
         })
         .await;
@@ -303,6 +309,7 @@ async fn manager(
                     peer_id.clone(),
                     peer.device_name.clone(),
                     caps,
+                    None, // inbound: we did not dial
                     cfg.keepalive,
                     hub.clone(),
                     internal_tx.clone(),
@@ -313,6 +320,7 @@ async fn manager(
                 peer_id,
                 device_name,
                 caps,
+                addr,
                 outbound,
             } => {
                 if let Some(entry) = peers.get_mut(&peer_id) {
@@ -320,13 +328,14 @@ async fn manager(
                     entry.device_name = device_name.clone();
                 }
                 bus.insert(peer_id.clone(), outbound);
-                tracing::info!(peer = %peer_id, caps = ?caps, "peer connected");
+                tracing::info!(peer = %peer_id, caps = ?caps, addr = ?addr, "peer connected");
                 emit(
                     &events,
                     TransportEvent::PeerConnected {
                         device_id: peer_id,
                         device_name,
                         caps,
+                        addr,
                     },
                 )
                 .await;
@@ -581,6 +590,7 @@ async fn dial_once(
             peer_id.to_string(),
             hs.peer.device_name.clone(),
             hs.effective_caps,
+            Some(addr.to_string()),
             cfg.keepalive,
             hub.clone(),
             internal_tx.clone(),

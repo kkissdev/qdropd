@@ -120,9 +120,34 @@ fn real_main() -> Result<()> {
             .with_context(|| format!("binding TCP listener on port {port}"))?;
         let bound_port = listener.local_addr()?.port();
 
-        let (discovery, discovery_rx) =
-            discovery::start(&device_id, &config.device_name, bound_port)
-                .context("starting mDNS discovery")?;
+        let (discovery_tx, discovery_rx) =
+            tokio::sync::mpsc::channel::<discovery::DiscoveryEvent>(64);
+
+        // Seed the dialer with each paired peer's last-known address so it can
+        // connect straight away after a network transition, before mDNS
+        // re-resolves.
+        {
+            let cached = qdrop_core::state::DaemonState::load().unwrap_or_default();
+            for p in &peers.peers {
+                if let Some(addr) = cached
+                    .last_addr
+                    .get(&p.device_id)
+                    .and_then(|s| s.parse::<SocketAddr>().ok())
+                {
+                    let _ = discovery_tx.try_send(discovery::DiscoveryEvent::Found(
+                        discovery::DiscoveredPeer {
+                            device_id: p.device_id.clone(),
+                            device_name: p.name.clone(),
+                            fingerprint: p.public_key.clone(),
+                            addrs: vec![addr],
+                        },
+                    ));
+                }
+            }
+        }
+
+        let discovery = discovery::start(&device_id, &config.device_name, bound_port, discovery_tx)
+            .context("starting mDNS discovery")?;
 
         let (roster_tx, roster_rx) = watch::channel(());
         spawn_roster_reload(roster.clone(), roster_tx);

@@ -26,9 +26,13 @@ pub async fn publish_events(mut rx: mpsc::Receiver<TransportEvent>) {
                 device_id,
                 device_name,
                 caps,
+                addr,
             } => {
                 tracing::info!(peer = %device_id, name = %device_name, caps = ?caps, "peer online");
                 state.mark_online(&device_id);
+                if let Some(addr) = addr {
+                    state.remember_addr(&device_id, &addr);
+                }
             }
             TransportEvent::PeerDisconnected { device_id, reason } => {
                 tracing::info!(peer = %device_id, %reason, "peer offline");

@@ -58,6 +58,10 @@ pub fn spawn(
     tokio::spawn(async move {
         let mut seq: u64 = 0;
         let mut last_synced: Option<[u8; 32]> = None;
+        // Rate-limit outbound broadcasts so a script hammering the clipboard
+        // can't saturate the link.
+        let min_gap = Duration::from_millis(300);
+        let mut last_broadcast = tokio::time::Instant::now() - min_gap;
 
         loop {
             tokio::select! {
@@ -65,6 +69,11 @@ pub fn spawn(
                     if controls.clipboard_paused() {
                         continue;
                     }
+                    if last_broadcast.elapsed() < min_gap {
+                        tracing::debug!("clipboard change rate-limited");
+                        continue;
+                    }
+                    last_broadcast = tokio::time::Instant::now();
                     match clip_local {
                         LocalClip::Text(text) => {
                             if text.len() > max_text {

@@ -26,6 +26,11 @@ pub struct DaemonState {
     /// device id -> unix time last seen (updated on disconnect).
     #[serde(default)]
     pub last_seen: BTreeMap<String, u64>,
+    /// device id -> last address we successfully connected to. Used to dial a
+    /// peer directly before mDNS has re-resolved it (network transitions,
+    /// flaky multicast).
+    #[serde(default)]
+    pub last_addr: BTreeMap<String, String>,
 }
 
 impl DaemonState {
@@ -54,6 +59,11 @@ impl DaemonState {
 
     pub fn mark_online(&mut self, device_id: &str) {
         self.online.insert(device_id.to_string(), now_unix());
+    }
+
+    pub fn remember_addr(&mut self, device_id: &str, addr: &str) {
+        self.last_addr
+            .insert(device_id.to_string(), addr.to_string());
     }
 
     pub fn mark_offline(&mut self, device_id: &str) {
