@@ -77,10 +77,14 @@ complete -c qdrop -n "__fish_qdrop_using_subcommand open" -s v -l verbose -d 'In
 complete -c qdrop -n "__fish_qdrop_using_subcommand open" -s q -l quiet -d 'Suppress progress/status output (errors still print)'
 complete -c qdrop -n "__fish_qdrop_using_subcommand open" -s h -l help -d 'Print help'
 complete -c qdrop -n "__fish_qdrop_using_subcommand open" -s V -l version -d 'Print version'
+complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l restore -d 'Put history entry N back on the clipboard' -r
+complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l send -d 'Send history entry N to a peer' -r
+complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l to -d 'Target peer for `--send` (default: all connected)' -r
 complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l pause -d 'Pause clipboard sync'
 complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l resume -d 'Resume clipboard sync'
 complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l toggle -d 'Flip between paused and active'
 complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l status -d 'Show clipboard sync status (the default)'
+complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -l history -d 'List recent clipboard entries'
 complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -s v -l verbose -d 'Increase log verbosity (debug). Overridden by `RUST_LOG`'
 complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -s q -l quiet -d 'Suppress progress/status output (errors still print)'
 complete -c qdrop -n "__fish_qdrop_using_subcommand clip" -s h -l help -d 'Print help'

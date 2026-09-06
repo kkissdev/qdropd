@@ -24,6 +24,9 @@ pub struct Config {
     pub sync_images: bool,
     /// Largest clipboard payload to sync inline, in bytes.
     pub max_clipboard_bytes: u64,
+    /// How many recent clipboard entries to keep (`qdrop clip --history`).
+    /// `0` disables history.
+    pub clipboard_history: usize,
     /// When to divert an incoming file/URL for confirmation.
     /// Accepts `false` / `true` / `"strict"` in `config.toml`.
     pub require_confirm: ConfirmPolicy,
@@ -85,6 +88,7 @@ impl Default for Config {
             sync_clipboard: true,
             sync_images: true,
             max_clipboard_bytes: 1024 * 1024,
+            clipboard_history: 25,
             require_confirm: ConfirmPolicy::Never,
             log_filter: "info".to_string(),
         }

@@ -35,7 +35,7 @@ fn run() -> Result<()> {
         Command::Paste => cmd_paste(),
         Command::Copy => cmd_copy(cli.quiet),
         Command::Open(args) => cmd_open(&args),
-        Command::Clip(args) => cmd_clip(args.action()),
+        Command::Clip(args) => cmd_clip(args.action(), args.to.clone()),
         Command::Auth(args) => cmd_auth(&args),
         Command::Status(args) => cmd_status(&args),
         Command::Doctor(args) => cmd_doctor(&args),
@@ -626,11 +626,51 @@ fn cmd_status(args: &cli::StatusArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_clip(action: ClipAction) -> Result<()> {
+fn cmd_clip(action: ClipAction, to: Option<String>) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("starting async runtime")?;
+
+    // History sub-actions have their own output shape.
+    match action {
+        ClipAction::History => {
+            let resp = rt.block_on(qdrop_core::control::request("clip_history"))?;
+            let empty = vec![];
+            let entries = resp
+                .get("entries")
+                .and_then(|v| v.as_array())
+                .unwrap_or(&empty);
+            if entries.is_empty() {
+                println!("(clipboard history is empty or disabled)");
+                return Ok(());
+            }
+            for e in entries {
+                println!(
+                    "{:>3}  {:<5}  {:<28}  {}",
+                    e.get("index").and_then(|v| v.as_u64()).unwrap_or(0),
+                    e.get("kind").and_then(|v| v.as_str()).unwrap_or("?"),
+                    e.get("preview").and_then(|v| v.as_str()).unwrap_or(""),
+                    e.get("origin").and_then(|v| v.as_str()).unwrap_or(""),
+                );
+            }
+            return Ok(());
+        }
+        ClipAction::Restore(n) => {
+            let req = serde_json::json!({ "cmd": "clip_restore", "index": n });
+            let resp = rt.block_on(qdrop_core::control::request_json(&req))?;
+            return json_ok(
+                &resp,
+                &format!("Restored history entry {n} to the clipboard."),
+            );
+        }
+        ClipAction::Send(n) => {
+            let req = serde_json::json!({ "cmd": "clip_send", "index": n, "to": to });
+            let resp = rt.block_on(qdrop_core::control::request_json(&req))?;
+            return json_ok(&resp, &format!("Sent history entry {n}."));
+        }
+        _ => {}
+    }
 
     let cmd = match action {
         ClipAction::Pause => "clip_pause",
@@ -648,6 +688,7 @@ fn cmd_clip(action: ClipAction) -> Result<()> {
                 "clip_pause"
             }
         }
+        _ => unreachable!(),
     };
     let resp = rt.block_on(qdrop_core::control::request(cmd))?;
 
@@ -674,4 +715,18 @@ fn cmd_clip(action: ClipAction) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+fn json_ok(resp: &serde_json::Value, msg: &str) -> Result<()> {
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        println!("{msg}");
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{}",
+            resp.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed")
+        )
+    }
 }

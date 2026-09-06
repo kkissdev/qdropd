@@ -34,6 +34,8 @@ its own.
 | `qdrop auth [<name>]` | pre-authorize a peer to send unattended (`--remove` / `--mutual`) |
 | `qdrop recv [--stdout]` | wait for an incoming file; print its path or stream it |
 | `qdrop paste` / `qdrop copy` | read / set the shared clipboard from a pipe |
+| `qdrop clip --history\|--restore N\|--send N` | recent clipboard entries |
+| `qdrop doctor [--json]` | diagnose why sync isn't working |
 | `qdrop daemon` / `qdropd` | run the daemon in the foreground |
 
 ## Layout

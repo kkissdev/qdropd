@@ -18,14 +18,17 @@ use crate::bus::PeerBus;
 use crate::clipboard::{self, ClipboardHandle, LocalClip};
 use crate::control::Controls;
 use crate::filexfer::FileXfer;
+use crate::history::History;
 
 /// Wire up clipboard sync. Returns the clipboard handle (for `qdrop paste` /
 /// `qdrop copy`); work happens in spawned tasks.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn(
     config: &Config,
     own_id: String,
     bus: PeerBus,
     filex: Arc<FileXfer>,
+    history: Arc<History>,
     mut clip_frames: mpsc::Receiver<(String, Message)>,
     mut blob_images: mpsc::Receiver<Vec<u8>>,
     controls: Arc<Controls>,
@@ -78,6 +81,7 @@ pub fn spawn(
                     last_broadcast = tokio::time::Instant::now();
                     match clip_local {
                         LocalClip::Text(text) => {
+                            history.record_text(&text, "local").await;
                             if text.len() > max_text {
                                 tracing::debug!(bytes = text.len(), "clipboard text over limit");
                                 continue;
@@ -94,6 +98,7 @@ pub fn spawn(
                             tracing::info!(seq, bytes = text.len(), "clipboard text broadcast");
                         }
                         LocalClip::Image(png) if controls.sync_images() => {
+                            history.record_image(&png, "local").await;
                             let h = sha256(&png);
                             if Some(h) == last_synced { continue; }
                             last_synced = Some(h);
@@ -122,6 +127,7 @@ pub fn spawn(
                     let Some(clip) = &clip else { continue };
                     if let Some(text) = entries.iter().find_map(|e| e.as_text()) {
                         if text.len() > max_text { continue; }
+                        history.record_text(text, &peer_id).await;
                         let h = sha256(text.as_bytes());
                         if Some(h) == last_synced { continue; }
                         last_synced = Some(h);
@@ -129,6 +135,7 @@ pub fn spawn(
                         tracing::info!(from = %peer_id, bytes = text.len(), "clipboard text applied");
                     } else if controls.sync_images() {
                         if let Some(png) = entries.iter().find_map(|e| e.as_image()) {
+                            history.record_image(png, &peer_id).await;
                             let h = sha256(png);
                             if Some(h) == last_synced { continue; }
                             last_synced = Some(h);

@@ -134,7 +134,6 @@ pub struct OpenArgs {
 
 /// Control clipboard sync. With no flag, prints status.
 #[derive(Debug, clap::Args)]
-#[group(multiple = false)]
 pub struct ClipArgs {
     /// Pause clipboard sync.
     #[arg(long)]
@@ -148,6 +147,18 @@ pub struct ClipArgs {
     /// Show clipboard sync status (the default).
     #[arg(long)]
     pub status: bool,
+    /// List recent clipboard entries.
+    #[arg(long)]
+    pub history: bool,
+    /// Put history entry N back on the clipboard.
+    #[arg(long, value_name = "N")]
+    pub restore: Option<usize>,
+    /// Send history entry N to a peer.
+    #[arg(long, value_name = "N")]
+    pub send: Option<usize>,
+    /// Target peer for `--send` (default: all connected).
+    #[arg(long, value_name = "NAME")]
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,6 +167,9 @@ pub enum ClipAction {
     Resume,
     Toggle,
     Status,
+    History,
+    Restore(usize),
+    Send(usize),
 }
 
 impl ClipArgs {
@@ -166,6 +180,12 @@ impl ClipArgs {
             ClipAction::Resume
         } else if self.toggle {
             ClipAction::Toggle
+        } else if self.history {
+            ClipAction::History
+        } else if let Some(n) = self.restore {
+            ClipAction::Restore(n)
+        } else if let Some(n) = self.send {
+            ClipAction::Send(n)
         } else {
             ClipAction::Status
         }

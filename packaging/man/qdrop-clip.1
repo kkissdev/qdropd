@@ -4,7 +4,7 @@
 .SH NAME
 clip \- Control clipboard synchronization
 .SH SYNOPSIS
-\fBqdrop clip\fR [\fB\-\-pause\fR] [\fB\-\-resume\fR] [\fB\-\-toggle\fR] [\fB\-\-status\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBqdrop clip\fR [\fB\-\-pause\fR] [\fB\-\-resume\fR] [\fB\-\-toggle\fR] [\fB\-\-status\fR] [\fB\-\-history\fR] [\fB\-\-restore\fR] [\fB\-\-send\fR] [\fB\-\-to\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Control clipboard synchronization
 .SH OPTIONS
@@ -20,6 +20,18 @@ Flip between paused and active
 .TP
 \fB\-\-status\fR
 Show clipboard sync status (the default)
+.TP
+\fB\-\-history\fR
+List recent clipboard entries
+.TP
+\fB\-\-restore\fR \fI<N>\fR
+Put history entry N back on the clipboard
+.TP
+\fB\-\-send\fR \fI<N>\fR
+Send history entry N to a peer
+.TP
+\fB\-\-to\fR \fI<NAME>\fR
+Target peer for `\-\-send` (default: all connected)
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help

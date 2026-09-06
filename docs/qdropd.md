@@ -83,7 +83,8 @@ and Linux. Set `QDROP_CONFIG_DIR` to point elsewhere (used by tests).
   | `sync_clipboard` | `true` | Master clipboard-sync switch |
   | `sync_images` | `true` | Include images in clipboard sync |
   | `max_clipboard_bytes` | `1048576` | Largest inline clipboard payload |
-  | `require_confirm` | `false` | Prompt before accepting incoming files |
+  | `clipboard_history` | `25` | Recent clipboard entries to keep (`0` = off) |
+  | `require_confirm` | `false` | `false` / `true` (prompt unlisted) / `"strict"` (prompt all) |
   | `log_filter` | `"info"` | Default log level when `--verbose` is off |
 
 - **`peers.toml`** — the paired-device registry. Written by `qdrop pair`
@@ -136,6 +137,20 @@ hostname + MAC addresses and sets `authorized = true` in `peers.toml`. When
 `require_confirm = "strict"` prompts everyone. The pinned key is the actual
 trust boundary — a changed MAC on reconnect only logs a notice.
 `qdrop auth --remove <name>` revokes; `qdrop auth` lists.
+
+## Clipboard history (M14)
+
+`qdrop clip --history` lists the last `clipboard_history` (config, default 25)
+distinct entries — text and images, newest first, with the source device.
+`--restore <n>` puts one back on the clipboard; `--send <n> [--to <name>]`
+pushes it to a peer. Concealed / transient items are never recorded; the ring
+is cached under `~/.config/qdrop/history/` and survives a restart.
+
+## `qdrop doctor` (M16)
+
+`qdrop doctor` runs a checklist — config, identity, daemon, listen port, mDNS
+visibility, each peer's reachability, download dir — and prints ✓/!/✗ with the
+specific fix for anything wrong. `--json` for bug reports.
 
 ## Shell pipes (M13)
 

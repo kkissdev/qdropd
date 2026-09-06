@@ -129,10 +129,14 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (clip)
 _arguments "${_arguments_options[@]}" : \
+'--restore=[Put history entry N back on the clipboard]:N:_default' \
+'--send=[Send history entry N to a peer]:N:_default' \
+'--to=[Target peer for \`--send\` (default\: all connected)]:NAME:_default' \
 '--pause[Pause clipboard sync]' \
 '--resume[Resume clipboard sync]' \
 '--toggle[Flip between paused and active]' \
 '--status[Show clipboard sync status (the default)]' \
+'--history[List recent clipboard entries]' \
 '-v[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '--verbose[Increase log verbosity (debug). Overridden by \`RUST_LOG\`]' \
 '-q[Suppress progress/status output (errors still print)]' \

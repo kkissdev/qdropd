@@ -133,12 +133,24 @@ _qdrop() {
             return 0
             ;;
         qdrop__subcmd__clip)
-            opts="-v -q -h -V --pause --resume --toggle --status --verbose --quiet --help --version"
+            opts="-v -q -h -V --pause --resume --toggle --status --history --restore --send --to --verbose --quiet --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --restore)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --send)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --to)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;

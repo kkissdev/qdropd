@@ -12,6 +12,7 @@ mod connection;
 mod control;
 mod discovery;
 mod filexfer;
+mod history;
 mod notify;
 mod secure;
 mod state;
@@ -174,6 +175,7 @@ fn real_main() -> Result<()> {
         let filex = FileXfer::new(&config, bus.clone(), download_dir, Some(clip_img_tx));
         let auth = auth::AuthManager::new(bus.clone());
         let confirm_policy = config.require_confirm;
+        let history = history::History::load(history::dir(), config.clipboard_history);
 
         // Route inbound application frames to the right subsystem.
         let (clip_tx, clip_rx) = tokio::sync::mpsc::channel::<(String, Message)>(64);
@@ -208,6 +210,7 @@ fn real_main() -> Result<()> {
             device_id.clone(),
             bus.clone(),
             filex.clone(),
+            history.clone(),
             clip_rx,
             clip_img_rx,
             controls.clone(),
@@ -219,6 +222,8 @@ fn real_main() -> Result<()> {
             filex: filex.clone(),
             auth: auth.clone(),
             clipboard,
+            history: history.clone(),
+            own_id: device_id.clone(),
             port: bound_port,
         }) {
             Ok(h) => Some(h),

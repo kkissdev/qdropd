@@ -15,6 +15,7 @@ use crate::auth::AuthManager;
 use crate::bus::PeerBus;
 use crate::clipboard::ClipboardHandle;
 use crate::filexfer::FileXfer;
+use crate::history::{History, Restored};
 
 pub use qdrop_core::control::socket_path;
 
@@ -50,6 +51,8 @@ pub struct ControlDeps {
     pub filex: Arc<FileXfer>,
     pub auth: Arc<AuthManager>,
     pub clipboard: Option<Arc<ClipboardHandle>>,
+    pub history: Arc<History>,
+    pub own_id: String,
     pub port: u16,
 }
 
@@ -80,6 +83,18 @@ enum Request {
     /// `qdrop copy` — set the shared clipboard.
     ClipSet {
         text: String,
+    },
+    /// `qdrop clip --history`.
+    ClipHistory,
+    /// `qdrop clip --restore <n>` — put history entry n back on the clipboard.
+    ClipRestore {
+        index: usize,
+    },
+    /// `qdrop clip --send <n> [--to name]`.
+    ClipSend {
+        index: usize,
+        #[serde(default)]
+        to: Option<String>,
     },
 }
 
@@ -172,6 +187,51 @@ async fn dispatch(req: Request, deps: &ControlDeps) -> serde_json::Value {
             None => json!({ "ok": false, "error": "clipboard unavailable on this host" }),
             Some(h) => {
                 h.apply_text(text);
+                json!({ "ok": true })
+            }
+        },
+        Request::ClipHistory => json!({ "ok": true, "entries": deps.history.list().await }),
+        Request::ClipRestore { index } => match (deps.history.get(index).await, &deps.clipboard) {
+            (Some(Restored::Text(t)), Some(h)) => {
+                h.apply_text(t);
+                json!({ "ok": true })
+            }
+            (Some(Restored::Image(b)), Some(h)) => {
+                h.apply_image(b);
+                json!({ "ok": true })
+            }
+            (None, _) => json!({ "ok": false, "error": "no such history entry" }),
+            (_, None) => json!({ "ok": false, "error": "clipboard unavailable on this host" }),
+        },
+        Request::ClipSend { index, to } => match deps.history.get(index).await {
+            None => json!({ "ok": false, "error": "no such history entry" }),
+            Some(Restored::Text(t)) => {
+                let msg = qdrop_core::Message::Clipboard {
+                    seq: 0,
+                    origin_id: deps.own_id.clone(),
+                    entries: vec![qdrop_core::proto::ClipEntry::text(&t)],
+                };
+                let n = match to.as_deref() {
+                    Some(name) => {
+                        let id = qdrop_core::Peers::load().ok().and_then(|p| {
+                            p.find(name)
+                                .or_else(|| p.find_by_id(name))
+                                .map(|p| p.device_id.clone())
+                        });
+                        match id {
+                            Some(id) if deps.bus.send_to(&id, msg) => 1,
+                            _ => 0,
+                        }
+                    }
+                    None => {
+                        deps.bus.broadcast(&msg, None);
+                        deps.bus.connected_ids().len()
+                    }
+                };
+                json!({ "ok": n > 0, "sent_to": n })
+            }
+            Some(Restored::Image(b)) => {
+                deps.filex.send_clip_image(b).await;
                 json!({ "ok": true })
             }
         },
