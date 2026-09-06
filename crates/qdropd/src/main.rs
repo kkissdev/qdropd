@@ -136,7 +136,8 @@ fn real_main() -> Result<()> {
 
         let download_dir = qdrop_core::paths::downloads_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("qdrop-downloads"));
-        let filex = FileXfer::new(&config, bus.clone(), download_dir);
+        let (clip_img_tx, clip_img_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+        let filex = FileXfer::new(&config, bus.clone(), download_dir, Some(clip_img_tx));
 
         // Route inbound application frames to the right subsystem.
         let (clip_tx, clip_rx) = tokio::sync::mpsc::channel::<(String, Message)>(64);
@@ -164,9 +165,12 @@ fn real_main() -> Result<()> {
             &config,
             device_id.clone(),
             bus.clone(),
+            filex.clone(),
             clip_rx,
+            clip_img_rx,
             controls.clone(),
         );
+        spawn_config_reload(controls.clone());
         let control = match control::spawn(ControlDeps {
             controls: controls.clone(),
             bus: bus.clone(),
@@ -233,6 +237,31 @@ fn spawn_roster_reload(roster: Roster, notify: watch::Sender<()>) {
 
 fn mtime(path: &std::path::Path) -> Option<std::time::SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Poll `config.toml` and push runtime-adjustable settings into `Controls`
+/// (currently just `sync_images`), so the toggle takes effect without a
+/// restart.
+fn spawn_config_reload(controls: Arc<Controls>) {
+    tokio::spawn(async move {
+        let Ok(path) = qdrop_core::paths::config_file() else {
+            return;
+        };
+        let mut last = mtime(&path);
+        let mut tick = tokio::time::interval(Duration::from_secs(3));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let now = mtime(&path);
+            if now != last {
+                last = now;
+                if let Ok(cfg) = Config::load_from(&path) {
+                    controls.set_sync_images(cfg.sync_images);
+                    tracing::info!(sync_images = cfg.sync_images, "config reloaded");
+                }
+            }
+        }
+    });
 }
 
 #[cfg(unix)]

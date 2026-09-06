@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use qdrop_core::proto::{safe_blob_name, Message, BLOB_CHUNK};
+use qdrop_core::proto::{safe_blob_name, BlobPurpose, Message, BLOB_CHUNK};
 use qdrop_core::Config;
 use sha2::{Digest, Sha256};
 use tokio::fs;
@@ -37,6 +37,9 @@ pub struct SendOutcome {
     pub detail: String,
 }
 
+/// Cap on an in-memory (clipboard-image) blob.
+const MAX_MEM_BLOB: u64 = 64 * 1024 * 1024;
+
 pub struct FileXfer {
     bus: PeerBus,
     download_dir: PathBuf,
@@ -44,15 +47,24 @@ pub struct FileXfer {
     next_id: AtomicU64,
     /// transfer id -> ack waiter (sender side).
     acks: Mutex<HashMap<u64, oneshot::Sender<(bool, String)>>>,
-    /// (peer_id, transfer id) -> in-progress incoming file (receiver side).
+    /// (peer_id, transfer id) -> in-progress incoming blob (receiver side).
     incoming: Mutex<HashMap<(String, u64), Incoming>>,
+    /// Where completed clipboard-image blobs go (set by the sync subsystem).
+    clip_sink: Option<mpsc::Sender<Vec<u8>>>,
+}
+
+enum Sink {
+    File {
+        tmp_path: PathBuf,
+        final_dir: PathBuf,
+        file: fs::File,
+    },
+    Memory(Vec<u8>),
 }
 
 struct Incoming {
     name: String,
-    tmp_path: PathBuf,
-    final_dir: PathBuf,
-    file: fs::File,
+    sink: Sink,
     hasher: Sha256,
     written: u64,
     declared: u64,
@@ -60,7 +72,12 @@ struct Incoming {
 }
 
 impl FileXfer {
-    pub fn new(config: &Config, bus: PeerBus, download_dir: PathBuf) -> Arc<Self> {
+    pub fn new(
+        config: &Config,
+        bus: PeerBus,
+        download_dir: PathBuf,
+        clip_sink: Option<mpsc::Sender<Vec<u8>>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             bus,
             download_dir,
@@ -68,13 +85,19 @@ impl FileXfer {
             next_id: AtomicU64::new(1),
             acks: Mutex::new(HashMap::new()),
             incoming: Mutex::new(HashMap::new()),
+            clip_sink,
         })
     }
 
     /// Route an inbound blob-related frame here (from the frame router).
     pub async fn handle_inbound(self: &Arc<Self>, peer_id: String, msg: Message) {
         match msg {
-            Message::BlobStart { id, name, size } => self.on_start(peer_id, id, name, size).await,
+            Message::BlobStart {
+                id,
+                name,
+                size,
+                purpose,
+            } => self.on_start(peer_id, id, name, size, purpose).await,
             Message::BlobChunk { id, data } => self.on_chunk(peer_id, id, data).await,
             Message::BlobEnd { id, sha256 } => self.on_end(peer_id, id, sha256).await,
             Message::BlobAck { id, ok, detail } => {
@@ -98,38 +121,67 @@ impl FileXfer {
         tracing::warn!(peer = %peer_id, id, "rejected incoming blob: {detail}");
     }
 
-    async fn on_start(self: &Arc<Self>, peer_id: String, id: u64, name: String, size: u64) {
-        let Some(safe) = safe_blob_name(&name) else {
-            self.reject(&peer_id, id, "unsafe filename").await;
-            return;
-        };
-        let final_dir = if self.require_confirm {
-            self.download_dir.join("pending")
-        } else {
-            self.download_dir.clone()
-        };
-        if let Err(e) = fs::create_dir_all(&final_dir).await {
-            self.reject(&peer_id, id, &format!("cannot create download dir: {e}"))
-                .await;
-            return;
-        }
-        let tmp_path = final_dir.join(format!(".{safe}.{id}.part"));
-        let file = match fs::File::create(&tmp_path).await {
-            Ok(f) => f,
-            Err(e) => {
-                self.reject(&peer_id, id, &format!("cannot create temp file: {e}"))
-                    .await;
-                return;
+    async fn on_start(
+        self: &Arc<Self>,
+        peer_id: String,
+        id: u64,
+        name: String,
+        size: u64,
+        purpose: BlobPurpose,
+    ) {
+        let (name, sink) = match purpose {
+            BlobPurpose::ClipboardImage => {
+                if self.clip_sink.is_none() {
+                    self.reject(&peer_id, id, "clipboard image sync not available")
+                        .await;
+                    return;
+                }
+                if size > MAX_MEM_BLOB {
+                    self.reject(&peer_id, id, "clipboard image too large").await;
+                    return;
+                }
+                ("clipboard-image".to_string(), Sink::Memory(Vec::new()))
+            }
+            BlobPurpose::File => {
+                let Some(safe) = safe_blob_name(&name) else {
+                    self.reject(&peer_id, id, "unsafe filename").await;
+                    return;
+                };
+                let final_dir = if self.require_confirm {
+                    self.download_dir.join("pending")
+                } else {
+                    self.download_dir.clone()
+                };
+                if let Err(e) = fs::create_dir_all(&final_dir).await {
+                    self.reject(&peer_id, id, &format!("cannot create download dir: {e}"))
+                        .await;
+                    return;
+                }
+                let tmp_path = final_dir.join(format!(".{safe}.{id}.part"));
+                let file = match fs::File::create(&tmp_path).await {
+                    Ok(f) => f,
+                    Err(e) => {
+                        self.reject(&peer_id, id, &format!("cannot create temp file: {e}"))
+                            .await;
+                        return;
+                    }
+                };
+                tracing::info!(peer = %peer_id, id, name = %safe, size, "receiving file");
+                (
+                    safe,
+                    Sink::File {
+                        tmp_path,
+                        final_dir,
+                        file,
+                    },
+                )
             }
         };
-        tracing::info!(peer = %peer_id, id, name = %safe, size, "receiving file");
         self.incoming.lock().await.insert(
             (peer_id.clone(), id),
             Incoming {
-                name: safe,
-                tmp_path,
-                final_dir,
-                file,
+                name,
+                sink,
                 hasher: Sha256::new(),
                 written: 0,
                 declared: size,
@@ -143,13 +195,29 @@ impl FileXfer {
         let Some(inc) = map.get_mut(&(peer_id.clone(), id)) else {
             return;
         };
-        if let Err(e) = inc.file.write_all(&data).await {
-            tracing::warn!(peer = %peer_id, id, "write failed: {e}");
-            let inc = map.remove(&(peer_id.clone(), id)).unwrap();
-            drop(map);
-            let _ = fs::remove_file(&inc.tmp_path).await;
-            self.reject(&peer_id, id, "write failed").await;
-            return;
+        match &mut inc.sink {
+            Sink::File { file, .. } => {
+                if let Err(e) = file.write_all(&data).await {
+                    tracing::warn!(peer = %peer_id, id, "write failed: {e}");
+                    if let Some(inc) = map.remove(&(peer_id.clone(), id)) {
+                        if let Sink::File { tmp_path, .. } = inc.sink {
+                            let _ = fs::remove_file(&tmp_path).await;
+                        }
+                    }
+                    drop(map);
+                    self.reject(&peer_id, id, "write failed").await;
+                    return;
+                }
+            }
+            Sink::Memory(buf) => {
+                if buf.len() as u64 + data.len() as u64 > MAX_MEM_BLOB {
+                    map.remove(&(peer_id.clone(), id));
+                    drop(map);
+                    self.reject(&peer_id, id, "clipboard image too large").await;
+                    return;
+                }
+                buf.extend_from_slice(&data);
+            }
         }
         inc.hasher.update(&data);
         inc.written += data.len() as u64;
@@ -159,48 +227,78 @@ impl FileXfer {
         let Some(mut inc) = self.incoming.lock().await.remove(&(peer_id.clone(), id)) else {
             return;
         };
-        let _ = inc.file.flush().await;
-        let _ = inc.file.sync_all().await;
-        drop(inc.file);
 
-        let got: [u8; 32] = inc.hasher.finalize().into();
+        async fn cleanup(sink: &Sink) {
+            if let Sink::File { tmp_path, .. } = sink {
+                let _ = fs::remove_file(tmp_path).await;
+            }
+        }
+
+        if let Sink::File { file, .. } = &mut inc.sink {
+            let _ = file.flush().await;
+            let _ = file.sync_all().await;
+        }
+
+        let got: [u8; 32] = inc.hasher.clone().finalize().into();
         if got != sha {
-            let _ = fs::remove_file(&inc.tmp_path).await;
+            cleanup(&inc.sink).await;
             self.reject(&peer_id, id, "sha256 mismatch").await;
             return;
         }
         if inc.declared != 0 && inc.written != inc.declared {
-            let _ = fs::remove_file(&inc.tmp_path).await;
+            cleanup(&inc.sink).await;
             self.reject(&peer_id, id, "size mismatch").await;
             return;
         }
 
-        let dest = unique_dest(&inc.final_dir, &inc.name).await;
-        if let Err(e) = fs::rename(&inc.tmp_path, &dest).await {
-            let _ = fs::remove_file(&inc.tmp_path).await;
-            self.reject(&peer_id, id, &format!("rename failed: {e}"))
-                .await;
-            return;
+        match inc.sink {
+            Sink::Memory(bytes) => {
+                if let Some(tx) = &self.clip_sink {
+                    let _ = tx.send(bytes).await;
+                }
+                tracing::info!(peer = %inc.peer, bytes = inc.written, "clipboard image received");
+                self.bus.send_to(
+                    &peer_id,
+                    Message::BlobAck {
+                        id,
+                        ok: true,
+                        detail: "clipboard-image".into(),
+                    },
+                );
+            }
+            Sink::File {
+                tmp_path,
+                final_dir,
+                file,
+            } => {
+                drop(file);
+                let dest = unique_dest(&final_dir, &inc.name).await;
+                if let Err(e) = fs::rename(&tmp_path, &dest).await {
+                    let _ = fs::remove_file(&tmp_path).await;
+                    self.reject(&peer_id, id, &format!("rename failed: {e}"))
+                        .await;
+                    return;
+                }
+                tracing::info!(peer = %inc.peer, path = %dest.display(), bytes = inc.written, "file received");
+                self.bus.send_to(
+                    &peer_id,
+                    Message::BlobAck {
+                        id,
+                        ok: true,
+                        detail: inc.name.clone(),
+                    },
+                );
+                let where_ = if self.require_confirm {
+                    format!("{} (pending review)", dest.display())
+                } else {
+                    dest.display().to_string()
+                };
+                notify(
+                    &format!("Received {}", inc.name),
+                    &format!("From a peer → {where_}"),
+                );
+            }
         }
-
-        tracing::info!(peer = %inc.peer, path = %dest.display(), bytes = inc.written, "file received");
-        self.bus.send_to(
-            &peer_id,
-            Message::BlobAck {
-                id,
-                ok: true,
-                detail: inc.name.clone(),
-            },
-        );
-        let where_ = if self.require_confirm {
-            format!("{} (pending review)", dest.display())
-        } else {
-            dest.display().to_string()
-        };
-        notify(
-            &format!("Received {}", inc.name),
-            &format!("From a peer → {where_}"),
-        );
     }
 
     /// Stream `paths` to `to` (a peer name) or to every connected peer.
@@ -316,63 +414,114 @@ impl FileXfer {
 
         let (ack_tx, ack_rx) = oneshot::channel();
         self.acks.lock().await.insert(id, ack_tx);
-
-        let result = self
-            .stream_blob(&sender, id, &name, size, path, ack_rx)
-            .await;
+        let result = stream_blob(
+            &sender,
+            id,
+            &name,
+            size,
+            BlobPurpose::File,
+            Source::File(path.to_path_buf()),
+            ack_rx,
+        )
+        .await;
         self.acks.lock().await.remove(&id);
         result
     }
 
-    async fn stream_blob(
-        self: &Arc<Self>,
-        sender: &mpsc::Sender<Message>,
-        id: u64,
-        name: &str,
-        size: u64,
-        path: &std::path::Path,
-        ack_rx: oneshot::Receiver<(bool, String)>,
-    ) -> Result<String> {
-        sender
-            .send(Message::BlobStart {
+    /// Broadcast a clipboard image to every connected peer via the blob path
+    /// (used for images larger than the inline limit). Best-effort.
+    pub async fn send_clip_image(self: &Arc<Self>, png: Vec<u8>) {
+        let size = png.len() as u64;
+        for peer in self.bus.connected_ids() {
+            let Some(sender) = self.bus.sender(&peer) else {
+                continue;
+            };
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+            let (ack_tx, ack_rx) = oneshot::channel();
+            self.acks.lock().await.insert(id, ack_tx);
+            let r = stream_blob(
+                &sender,
                 id,
-                name: name.to_string(),
+                "clipboard.png",
                 size,
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("connection closed"))?;
-
-        let mut file = fs::File::open(path).await?;
-        let mut hasher = Sha256::new();
-        let mut buf = vec![0u8; BLOB_CHUNK];
-        loop {
-            let n = file.read(&mut buf).await?;
-            if n == 0 {
-                break;
+                BlobPurpose::ClipboardImage,
+                Source::Mem(png.clone()),
+                ack_rx,
+            )
+            .await;
+            self.acks.lock().await.remove(&id);
+            if let Err(e) = r {
+                tracing::debug!(peer = %peer, "clipboard image send failed: {e:#}");
             }
-            hasher.update(&buf[..n]);
-            sender
-                .send(Message::BlobChunk {
-                    id,
-                    data: buf[..n].to_vec(),
-                })
-                .await
-                .map_err(|_| anyhow::anyhow!("connection closed mid-transfer"))?;
         }
-        sender
-            .send(Message::BlobEnd {
-                id,
-                sha256: hasher.finalize().into(),
-            })
-            .await
-            .map_err(|_| anyhow::anyhow!("connection closed"))?;
+    }
+}
 
-        match timeout(ACK_TIMEOUT, ack_rx).await {
-            Ok(Ok((true, detail))) => Ok(detail),
-            Ok(Ok((false, detail))) => Err(anyhow::anyhow!("peer rejected: {detail}")),
-            Ok(Err(_)) => Err(anyhow::anyhow!("ack channel dropped")),
-            Err(_) => Err(anyhow::anyhow!("timed out waiting for peer ack")),
+enum Source {
+    File(PathBuf),
+    Mem(Vec<u8>),
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn stream_blob(
+    sender: &mpsc::Sender<Message>,
+    id: u64,
+    name: &str,
+    size: u64,
+    purpose: BlobPurpose,
+    source: Source,
+    ack_rx: oneshot::Receiver<(bool, String)>,
+) -> Result<String> {
+    sender
+        .send(Message::BlobStart {
+            id,
+            name: name.to_string(),
+            size,
+            purpose,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("connection closed"))?;
+
+    let mut hasher = Sha256::new();
+    let send_chunk = |data: Vec<u8>| async {
+        sender
+            .send(Message::BlobChunk { id, data })
+            .await
+            .map_err(|_| anyhow::anyhow!("connection closed mid-transfer"))
+    };
+    match source {
+        Source::File(p) => {
+            let mut file = fs::File::open(&p).await?;
+            let mut buf = vec![0u8; BLOB_CHUNK];
+            loop {
+                let n = file.read(&mut buf).await?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+                send_chunk(buf[..n].to_vec()).await?;
+            }
         }
+        Source::Mem(b) => {
+            for chunk in b.chunks(BLOB_CHUNK) {
+                hasher.update(chunk);
+                send_chunk(chunk.to_vec()).await?;
+            }
+        }
+    }
+    sender
+        .send(Message::BlobEnd {
+            id,
+            sha256: hasher.finalize().into(),
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("connection closed"))?;
+
+    match timeout(ACK_TIMEOUT, ack_rx).await {
+        Ok(Ok((true, detail))) => Ok(detail),
+        Ok(Ok((false, detail))) => Err(anyhow::anyhow!("peer rejected: {detail}")),
+        Ok(Err(_)) => Err(anyhow::anyhow!("ack channel dropped")),
+        Err(_) => Err(anyhow::anyhow!("timed out waiting for peer ack")),
     }
 }
 
@@ -432,8 +581,8 @@ mod tests {
         let bus_b = PeerBus::new();
         bus_b.insert("A".into(), b2a_tx);
 
-        let fx_a = FileXfer::new(&cfg(false), bus_a, dir_a);
-        let fx_b = FileXfer::new(&cfg(confirm_b), bus_b, dir_b);
+        let fx_a = FileXfer::new(&cfg(false), bus_a, dir_a, None);
+        let fx_b = FileXfer::new(&cfg(confirm_b), bus_b, dir_b, None);
 
         {
             let fx_b = fx_b.clone();
@@ -495,6 +644,7 @@ mod tests {
                 id: 7,
                 name: "evil.txt".into(),
                 size: 3,
+                purpose: qdrop_core::proto::BlobPurpose::File,
             },
         )
         .await;
@@ -535,6 +685,7 @@ mod tests {
                 id: 1,
                 name: "../../etc/x".into(),
                 size: 1,
+                purpose: qdrop_core::proto::BlobPurpose::File,
             },
         )
         .await;

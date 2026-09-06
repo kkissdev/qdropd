@@ -66,6 +66,22 @@ pub struct Hello {
 
 /// MIME type for the plain-text clipboard entry (M3).
 pub const MIME_TEXT: &str = "text/plain;charset=utf-8";
+/// MIME type for clipboard images (M6). PNG on the wire regardless of source.
+pub const MIME_PNG: &str = "image/png";
+/// Clipboard images at or below this size are sent inline in a `Clipboard`
+/// frame; larger ones go through the blob path.
+pub const CLIP_IMAGE_INLINE_MAX: usize = 256 * 1024;
+
+/// What a blob transfer is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobPurpose {
+    /// A file, saved to the downloads directory (M4).
+    #[default]
+    File,
+    /// A clipboard image, applied to the local clipboard (M6).
+    ClipboardImage,
+}
 
 /// One typed payload in a clipboard update.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +99,14 @@ impl ClipEntry {
         }
     }
 
+    /// A PNG image entry.
+    pub fn png(bytes: Vec<u8>) -> Self {
+        Self {
+            mime: MIME_PNG.to_string(),
+            data: bytes,
+        }
+    }
+
     /// The entry's text, if it is a text MIME type and valid UTF-8.
     pub fn as_text(&self) -> Option<&str> {
         if self.mime.starts_with("text/") {
@@ -90,6 +114,11 @@ impl ClipEntry {
         } else {
             None
         }
+    }
+
+    /// The entry's bytes, if it is an image.
+    pub fn as_image(&self) -> Option<&[u8]> {
+        self.mime.starts_with("image/").then_some(&self.data[..])
     }
 }
 
@@ -122,6 +151,9 @@ pub enum Message {
         id: u64,
         name: String,
         size: u64,
+        /// What the blob is for (defaults to a file download).
+        #[serde(default)]
+        purpose: BlobPurpose,
     },
     /// One chunk of a blob (~64 KiB). Chunks for a given `id` arrive in order.
     BlobChunk {

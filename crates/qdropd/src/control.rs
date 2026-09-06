@@ -16,10 +16,13 @@ use crate::filexfer::FileXfer;
 
 pub use qdrop_core::control::socket_path;
 
-/// Runtime toggles shared with the sync subsystem.
+/// Runtime toggles shared with the sync subsystem. `sync_images` mirrors
+/// `config.toml` and is refreshed by the config watcher, so the toggle takes
+/// effect without a restart.
 #[derive(Debug, Default)]
 pub struct Controls {
     clipboard_paused: AtomicBool,
+    sync_images: AtomicBool,
 }
 
 impl Controls {
@@ -28,6 +31,12 @@ impl Controls {
     }
     pub fn set_clipboard_paused(&self, v: bool) {
         self.clipboard_paused.store(v, Ordering::Relaxed);
+    }
+    pub fn sync_images(&self) -> bool {
+        self.sync_images.load(Ordering::Relaxed)
+    }
+    pub fn set_sync_images(&self, v: bool) {
+        self.sync_images.store(v, Ordering::Relaxed);
     }
 }
 
