@@ -1,0 +1,33 @@
+# Maintainer: Kevin Kiss <kevin@sysrex.com>
+pkgname=qdrop
+pkgver=0.0.1
+pkgrel=1
+pkgdesc="Peer-to-peer clipboard, file, and link bridge for your own devices"
+arch=('x86_64' 'aarch64')
+url="https://github.com/kkissdev/qdropd"
+license=('MIT')
+depends=('gcc-libs')
+optdepends=('wl-clipboard: Wayland clipboard sync'
+            'libnotify: desktop notifications')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "qdropd-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo build --frozen --release --workspace
+}
+
+package() {
+  cd "qdropd-$pkgver"
+  install -Dm755 target/release/qdrop  "$pkgdir/usr/bin/qdrop"
+  install -Dm755 target/release/qdropd "$pkgdir/usr/bin/qdropd"
+  install -Dm644 packaging/systemd/qdropd.service \
+    "$pkgdir/usr/lib/systemd/user/qdropd.service"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  [ -f packaging/man/qdrop.1 ] && install -Dm644 packaging/man/qdrop.1 \
+    "$pkgdir/usr/share/man/man1/qdrop.1"
+  [ -f packaging/man/qdropd.1 ] && install -Dm644 packaging/man/qdropd.1 \
+    "$pkgdir/usr/share/man/man1/qdropd.1"
+}

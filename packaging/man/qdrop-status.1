@@ -1,0 +1,19 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH status 1  "status " 
+.SH NAME
+status \- Show live daemon status (peers, clipboard)
+.SH SYNOPSIS
+\fBqdrop status\fR [\fB\-\-json\fR] [\fB\-\-waybar\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Show live daemon status (peers, clipboard)
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Emit the raw JSON from the daemon
+.TP
+\fB\-\-waybar\fR
+Emit a single line of waybar JSON (`text` / `tooltip` / `class`)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

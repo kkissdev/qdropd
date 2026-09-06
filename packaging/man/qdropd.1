@@ -1,0 +1,56 @@
+.TH QDROPD 1 "qdrop 0.0.1" "qdrop" "User Commands"
+.SH NAME
+qdropd \- the qdrop daemon
+.SH SYNOPSIS
+.B qdropd
+[\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-\-port\fR \fIPORT\fR] [\fB\-\-check\fR]
+.SH DESCRIPTION
+.B qdropd
+is the long\-running background service. It advertises and browses
+.I _qdrop._tcp
+over mDNS, holds one mutually\-authenticated TLS\ 1.3 connection per paired
+peer, and runs clipboard sync and file transfer. Trust is established once with
+.BR "qdrop pair" (1).
+.PP
+It logs to standard error and exits cleanly on
+.B SIGTERM
+or
+.BR "Ctrl\-C" .
+A service manager (see
+.BR launchd (8)
+or
+.BR systemd.user (5))
+keeps it running and restarts it on crash.
+.SH OPTIONS
+.TP
+.BR \-v ", " \-\-verbose
+Debug\-level logging. Overridden by the
+.B RUST_LOG
+environment variable.
+.TP
+.BR \-\-port " " \fIPORT\fR
+Override the listen port from
+.IR config.toml .
+.TP
+.B \-\-check
+Load and validate configuration, log the plan, and exit without binding
+anything.
+.SH FILES
+.TP
+.I ~/.config/qdrop/config.toml
+Daemon configuration (all keys optional).
+.TP
+.I ~/.config/qdrop/peers.toml
+Paired\-device registry, written by
+.BR "qdrop pair" (1).
+.TP
+.I ~/.config/qdrop/identity.pem
+Long\-term Ed25519 identity key (mode 0600).
+.TP
+.I ~/.config/qdrop/state.json
+Live connection status, read by
+.BR "qdrop status" (1).
+.SH SEE ALSO
+.BR qdrop (1)
+.SH AUTHOR
+Kevin Kiss <kevin@sysrex.com>

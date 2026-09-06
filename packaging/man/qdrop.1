@@ -1,0 +1,46 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH qdrop 1  "qdrop 0.0.1" 
+.SH NAME
+qdrop \- Peer\-to\-peer clipboard, file, and link bridge for your own devices.
+.SH SYNOPSIS
+\fBqdrop\fR [\fB\-v\fR|\fB\-\-verbose\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+Peer\-to\-peer clipboard, file, and link bridge for your own devices.
+.SH OPTIONS
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Increase log verbosity (debug). Overridden by `RUST_LOG`
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+qdrop\-pair(1)
+Pair with another device, or manage existing pairings
+.TP
+qdrop\-peers(1)
+List paired peers and their status
+.TP
+qdrop\-send(1)
+Send one or more files to a peer
+.TP
+qdrop\-open(1)
+Open a URL on a peer
+.TP
+qdrop\-clip(1)
+Control clipboard synchronization
+.TP
+qdrop\-status(1)
+Show live daemon status (peers, clipboard)
+.TP
+qdrop\-daemon(1)
+Run the qdrop daemon in the foreground
+.TP
+qdrop\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH VERSION
+v0.0.1

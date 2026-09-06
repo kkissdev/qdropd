@@ -90,6 +90,14 @@ fn real_main() -> Result<()> {
         return Ok(());
     }
 
+    if peers.is_empty() {
+        tracing::warn!(
+            "no devices paired yet — run `qdrop pair` on this machine and \
+             `qdrop pair {}` on the other one",
+            config.device_name
+        );
+    }
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

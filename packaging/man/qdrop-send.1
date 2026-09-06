@@ -1,0 +1,19 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH send 1  "send " 
+.SH NAME
+send \- Send one or more files to a peer
+.SH SYNOPSIS
+\fBqdrop send\fR [\fB\-\-to\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIPATH\fR> 
+.SH DESCRIPTION
+Send one or more files to a peer
+.SH OPTIONS
+.TP
+\fB\-\-to\fR \fI<NAME>\fR
+Target peer name. Defaults to all paired peers (or the sole peer)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fIPATH\fR>
+Files to send

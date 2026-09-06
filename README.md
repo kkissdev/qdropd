@@ -1,62 +1,61 @@
 # qdrop
 
 Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linux/Omarchy).
+End-to-end encrypted (TLS 1.3, keys pinned at pairing), LAN-only, no account, no relay.
 
-## Status
+## 60-second setup
 
-Milestone **M7** — status UI. `qdrop status` (table / `--json` / `--waybar`)
-reads a live control socket; a waybar module and a macOS menu-bar shell
-(`contrib/`) reflect peer drop/reconnect within ~1s and drive pause from the
-UI. M1–M6 (the daily-driver cut) are done. Packaging and hardening remain
-(see [`MILESTONES.md`](MILESTONES.md)).
+```bash
+# on both machines
+git clone https://github.com/kkissdev/qdropd && cd qdropd
+./packaging/install.sh          # builds, installs qdrop + qdropd, starts the service
+
+# pair them (once)
+qdrop pair                      # machine A: prints a 6-digit PIN
+qdrop pair <A-name-or-ip>       # machine B: type the PIN
+```
+
+That's it — copy text/images on one machine and they appear on the other;
+`qdrop send file.pdf`, `qdrop open https://…`. Reboot both, it reconnects on
+its own.
+
+## Commands
+
+| Command | Does |
+| --- | --- |
+| `qdrop pair [<name\|ip>]` | pair with a device (`--remove <name>` to unpair) |
+| `qdrop peers` | list paired devices + online/last-seen |
+| `qdrop status [--json\|--waybar]` | live daemon status |
+| `qdrop send <path>… [--to <name>]` | send files to a peer |
+| `qdrop open <url> [--to <name>]` | open a URL on a peer |
+| `qdrop clip --pause\|--resume\|--toggle\|--status` | control clipboard sync |
+| `qdrop daemon` / `qdropd` | run the daemon in the foreground |
 
 ## Layout
 
-| Crate | Kind | Role |
-| --- | --- | --- |
-| `crates/qdrop-core` | lib | config, peers/roster, identity + pinned TLS, PIN pairing, wire protocol, logging |
-| `crates/qdrop` | bin (`qdrop`) | command-line client (`pair`, `peers`, …) |
-| `crates/qdropd` | bin (`qdropd`) | daemon: discovery + authenticated transport |
+| Crate | Role |
+| --- | --- |
+| `crates/qdrop-core` | config, peers/roster, identity + pinned TLS, PIN pairing, wire protocol |
+| `crates/qdrop` | the `qdrop` CLI |
+| `crates/qdropd` | the daemon: discovery, transport, clipboard sync, file transfer |
 
-## Pairing
+`packaging/` has the launchd / systemd units, a Homebrew formula, a PKGBUILD,
+`install.sh`, and generated man pages + shell completions
+(`cargo run -p qdrop --example gen-artifacts`). `contrib/` has the macOS
+menu-bar shell, the waybar module, and send-trigger recipes.
 
-```bash
-# on device A
-qdrop pair                 # prints a PIN, waits 60s
-# on device B
-qdrop pair alpha           # or: qdrop pair 192.168.1.50 — prompts for the PIN
-```
+## Configuration
 
-Then start `qdropd` on both. `qdrop pair --remove <name>` unpairs.
+`~/.config/qdrop/` on both platforms (`QDROP_CONFIG_DIR` overrides):
+`config.toml` (all keys optional), `peers.toml` (pairing writes it),
+`identity.pem` (0600), `state.json` (daemon-written). See
+[`docs/qdropd.md`](docs/qdropd.md).
 
-## Build
+## Development
 
 ```bash
 cargo build --workspace
 cargo test --workspace
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
-
-## Try it
-
-```bash
-cargo run --bin qdrop -- --help
-cargo run --bin qdropd -- --version
-cargo run --bin qdropd -- --check   # load config, print the plan, exit
-```
-
-## Daemon
-
-`qdropd` is a foreground shell command; see [`docs/qdropd.md`](docs/qdropd.md)
-for full usage. A service-manager unit to run it in the background comes in M8.
-
-## Configuration
-
-Read from `~/.config/qdrop/` on both platforms (override the directory with
-`QDROP_CONFIG_DIR`):
-
-- `config.toml` — device name, port, sync toggles, limits. All fields optional.
-- `peers.toml` — paired devices (populated by `qdrop pair`, M2).
-
-Logs go to stderr. Raise verbosity with `-v`/`--verbose` or `RUST_LOG`.

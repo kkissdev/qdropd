@@ -1,0 +1,19 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH pair 1  "pair " 
+.SH NAME
+pair \- Pair with another device, or manage existing pairings
+.SH SYNOPSIS
+\fBqdrop pair\fR [\fB\-\-remove\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGET\fR] 
+.SH DESCRIPTION
+Pair with another device, or manage existing pairings
+.SH OPTIONS
+.TP
+\fB\-\-remove\fR \fI<NAME>\fR
+Remove an existing pairing by name
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fITARGET\fR]
+Peer name or IP to pair with. Omit to enter discoverable mode (side A)

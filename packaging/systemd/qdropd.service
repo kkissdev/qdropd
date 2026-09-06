@@ -1,0 +1,16 @@
+[Unit]
+Description=qdrop peer-to-peer clipboard and file bridge
+Documentation=https://github.com/kkissdev/qdropd
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/qdropd
+Restart=on-failure
+RestartSec=10
+# Give the clipboard access to the Wayland session.
+Environment=XDG_RUNTIME_DIR=%t
+
+[Install]
+WantedBy=default.target
