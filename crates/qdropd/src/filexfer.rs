@@ -385,7 +385,7 @@ fn resolve_peer(name: &str) -> Option<String> {
 }
 
 /// Friendly name for a device id, falling back to the id itself.
-fn peer_label(device_id: &str) -> String {
+pub(crate) fn peer_label(device_id: &str) -> String {
     qdrop_core::Peers::load()
         .ok()
         .and_then(|p| p.find_by_id(device_id).map(|p| p.name.clone()))

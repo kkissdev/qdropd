@@ -271,8 +271,32 @@ fn cmd_send(args: &cli::SendArgs) -> Result<()> {
 }
 
 fn cmd_open(args: &cli::OpenArgs) -> Result<()> {
-    let _ = &args.url;
-    not_yet("open", "M5")
+    if !qdrop_core::proto::is_allowed_url(&args.url) {
+        anyhow::bail!(
+            "refusing {:?}: only {} URLs are allowed",
+            args.url,
+            qdrop_core::proto::URL_SCHEME_ALLOWLIST.join(", ")
+        );
+    }
+    let req = serde_json::json!({ "cmd": "open", "url": args.url, "to": args.to });
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting async runtime")?;
+    let resp = rt.block_on(qdrop_core::control::request_json(&req))?;
+
+    if resp.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let n = resp.get("dispatched").and_then(|v| v.as_u64()).unwrap_or(0);
+        println!("Opened on {n} peer(s).");
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{}",
+            resp.get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("failed")
+        )
+    }
 }
 
 fn cmd_clip(action: ClipAction) -> Result<()> {
@@ -308,8 +332,4 @@ fn cmd_clip(action: ClipAction) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn not_yet(what: &str, milestone: &str) -> Result<()> {
-    anyhow::bail!("`{what}` is not implemented yet (scheduled for {milestone})")
 }

@@ -140,10 +140,49 @@ pub enum Message {
         ok: bool,
         detail: String,
     },
+
+    /// Ask the peer to open a URL in its default handler (M5).
+    OpenUrl {
+        url: String,
+    },
 }
 
 /// Blob chunk size on the wire.
 pub const BLOB_CHUNK: usize = 64 * 1024;
+
+/// URL schemes the peer will actually open. Everything else — `file:`,
+/// `javascript:`, `data:`, shell-ish strings — is refused on both ends.
+pub const URL_SCHEME_ALLOWLIST: &[&str] = &["http", "https", "mailto"];
+
+/// Whether `url` is safe to hand to `open` / `xdg-open` on the peer.
+pub fn is_allowed_url(url: &str) -> bool {
+    let url = url.trim();
+    if url.is_empty() || url.len() > 4096 {
+        return false;
+    }
+    // No control characters, whitespace, or quotes — even though we never pass
+    // the URL through a shell.
+    if url
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '"' || c == '\'' || c == '`')
+    {
+        return false;
+    }
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    if !URL_SCHEME_ALLOWLIST
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+    {
+        return false;
+    }
+    match scheme.to_ascii_lowercase().as_str() {
+        "http" | "https" => rest.starts_with("//") && rest.len() > 2,
+        "mailto" => rest.contains('@'),
+        _ => false,
+    }
+}
 
 /// Validate an incoming blob filename. Returns the safe basename, or `None` if
 /// it tries to escape the download directory.
@@ -233,6 +272,32 @@ mod tests {
             r"..\windows",
         ] {
             assert_eq!(safe_blob_name(bad), None, "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn url_allowlist() {
+        for ok in [
+            "https://example.com",
+            "http://192.168.1.5:8080/path?q=1",
+            "HTTPS://EXAMPLE.COM",
+            "mailto:a@b.com",
+        ] {
+            assert!(is_allowed_url(ok), "{ok:?} should be allowed");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<script>",
+            "http:/nohost",
+            "https://exa mple.com",
+            "https://example.com/\"; rm -rf /",
+            "ftp://example.com",
+            "",
+            "not a url",
+            "vbscript:msgbox",
+        ] {
+            assert!(!is_allowed_url(bad), "{bad:?} should be rejected");
         }
     }
 

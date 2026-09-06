@@ -16,6 +16,7 @@ mod secure;
 mod state;
 mod sync;
 mod transport;
+mod weblink;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -152,6 +153,7 @@ fn real_main() -> Result<()> {
                         | Message::BlobChunk { .. }
                         | Message::BlobEnd { .. }
                         | Message::BlobAck { .. } => filex.handle_inbound(peer, msg).await,
+                        Message::OpenUrl { url } => weblink::handle_inbound(&peer, url),
                         _ => {}
                     }
                 }

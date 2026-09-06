@@ -4,10 +4,10 @@ Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linu
 
 ## Status
 
-Milestone **M4** — file send. `qdrop send <path>... [--to name]` streams files
-to paired peers (64 KiB chunks, SHA-256 verified, atomic landing in
-`~/Downloads/qdrop/`, path-traversal-safe). Plus M3 clipboard text sync and
-M2 pinned-key TLS. URL push and images are next (see [`MILESTONES.md`](MILESTONES.md)).
+Milestone **M5** — `qdrop open <url>` pushes a link to a paired peer's browser
+(scheme allowlist: http/https/mailto; `javascript:`/`file:` refused). Plus M4
+file send, M3 clipboard text, M2 pinned-key TLS. Every CLI subcommand now works;
+next up is clipboard images and hardening (see [`MILESTONES.md`](MILESTONES.md)).
 
 ## Layout
 

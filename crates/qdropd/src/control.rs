@@ -51,6 +51,11 @@ enum Request {
         #[serde(default)]
         to: Option<String>,
     },
+    Open {
+        url: String,
+        #[serde(default)]
+        to: Option<String>,
+    },
 }
 
 /// Bind the control socket and serve requests until the task is dropped.
@@ -120,6 +125,12 @@ async fn dispatch(req: Request, deps: &ControlDeps) -> serde_json::Value {
             let outcomes = deps.filex.send(paths, to).await;
             let ok = !outcomes.is_empty() && outcomes.iter().all(|o| o.ok);
             json!({ "ok": ok, "sent": outcomes })
+        }
+        Request::Open { url, to } => {
+            match crate::weblink::dispatch(&deps.bus, &url, to.as_deref()) {
+                Ok(n) => json!({ "ok": true, "dispatched": n }),
+                Err(e) => json!({ "ok": false, "error": e }),
+            }
         }
     }
 }

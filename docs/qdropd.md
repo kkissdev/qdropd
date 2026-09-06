@@ -132,6 +132,13 @@ of them). Chunks are 64 KiB; one blob is in flight per peer at a time.
 - A drop mid-transfer aborts that blob; the send retries from the start once
   the peer reconnects.
 
+## Push a link (M5)
+
+`qdrop open <url> [--to name]` opens the URL in the peer's default browser via
+`open` / `xdg-open` (passed as one argv element, never a shell). Only
+`http`, `https`, and `mailto` are accepted; the allowlist is enforced on both
+ends, so `javascript:`, `file:`, `data:` and shell-ish payloads are refused.
+
 ## What it does today
 
 Through M2 (discovery + authenticated transport):
