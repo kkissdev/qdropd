@@ -118,6 +118,13 @@ clipboard logs a warning and carries on.
   Unix socket (`$XDG_RUNTIME_DIR/qdropd.sock`, else `<config dir>/qdropd.sock`;
   override with `QDROP_CONTROL_SOCK`).
 
+## Status & control (M7)
+
+`qdrop status` shows peers (online/offline) and clipboard state from the live
+control socket. `--json` for scripts, `--waybar` for a waybar `custom/` module.
+`qdrop clip --toggle` flips pause. See [`../contrib/`](../contrib/) for the
+macOS menu-bar shell, the waybar module, and send-trigger recipes.
+
 ## Clipboard images + secret hygiene (M6)
 
 Images sync alongside text (PNG on the wire; inline for <=256 KiB, otherwise

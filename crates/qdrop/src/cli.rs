@@ -32,8 +32,20 @@ pub enum Command {
     Open(OpenArgs),
     /// Control clipboard synchronization.
     Clip(ClipArgs),
+    /// Show live daemon status (peers, clipboard).
+    Status(StatusArgs),
     /// Run the qdrop daemon in the foreground.
     Daemon(DaemonArgs),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct StatusArgs {
+    /// Emit the raw JSON from the daemon.
+    #[arg(long)]
+    pub json: bool,
+    /// Emit a single line of waybar JSON (`text` / `tooltip` / `class`).
+    #[arg(long)]
+    pub waybar: bool,
 }
 
 #[derive(Debug, clap::Args)]
@@ -81,6 +93,9 @@ pub struct ClipArgs {
     /// Resume clipboard sync.
     #[arg(long)]
     pub resume: bool,
+    /// Flip between paused and active.
+    #[arg(long)]
+    pub toggle: bool,
     /// Show clipboard sync status (the default).
     #[arg(long)]
     pub status: bool,
@@ -90,6 +105,7 @@ pub struct ClipArgs {
 pub enum ClipAction {
     Pause,
     Resume,
+    Toggle,
     Status,
 }
 
@@ -99,6 +115,8 @@ impl ClipArgs {
             ClipAction::Pause
         } else if self.resume {
             ClipAction::Resume
+        } else if self.toggle {
+            ClipAction::Toggle
         } else {
             ClipAction::Status
         }

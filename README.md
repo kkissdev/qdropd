@@ -4,11 +4,11 @@ Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linu
 
 ## Status
 
-Milestone **M6** completes the daily-driver cut (M1-M6): clipboard **images**
-sync too (PNG, inline or via the blob path when large), and password-manager
-items (`org.nspasteboard.ConcealedType` / transient) are never synced. Plus
-M5 link push, M4 file send, M3 clipboard text, M2 pinned-key TLS. Remaining
-milestones are UI, packaging, and hardening (see [`MILESTONES.md`](MILESTONES.md)).
+Milestone **M7** — status UI. `qdrop status` (table / `--json` / `--waybar`)
+reads a live control socket; a waybar module and a macOS menu-bar shell
+(`contrib/`) reflect peer drop/reconnect within ~1s and drive pause from the
+UI. M1–M6 (the daily-driver cut) are done. Packaging and hardening remain
+(see [`MILESTONES.md`](MILESTONES.md)).
 
 ## Layout
 

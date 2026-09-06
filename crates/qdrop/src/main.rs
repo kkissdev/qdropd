@@ -33,6 +33,7 @@ fn run() -> Result<()> {
         Command::Send(args) => cmd_send(&args),
         Command::Open(args) => cmd_open(&args),
         Command::Clip(args) => cmd_clip(args.action()),
+        Command::Status(args) => cmd_status(&args),
         Command::Daemon(args) => cmd_daemon(&args, cli.verbose),
     }
 }
@@ -299,16 +300,116 @@ fn cmd_open(args: &cli::OpenArgs) -> Result<()> {
     }
 }
 
-fn cmd_clip(action: ClipAction) -> Result<()> {
-    let cmd = match action {
-        ClipAction::Pause => "clip_pause",
-        ClipAction::Resume => "clip_resume",
-        ClipAction::Status => "clip_status",
-    };
+fn cmd_status(args: &cli::StatusArgs) -> Result<()> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .context("starting async runtime")?;
+    let resp = rt.block_on(qdrop_core::control::request("status"))?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&resp)?);
+        return Ok(());
+    }
+
+    let paused = resp
+        .get("clipboard_paused")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let empty = vec![];
+    let peers = resp
+        .get("peers")
+        .and_then(|v| v.as_array())
+        .unwrap_or(&empty);
+    let online = peers
+        .iter()
+        .filter(|p| p.get("online").and_then(|v| v.as_bool()).unwrap_or(false))
+        .count();
+
+    if args.waybar {
+        let icon = if paused {
+            "󰅘"
+        } else if online > 0 {
+            "󰓅"
+        } else {
+            "󰤭"
+        };
+        let tip = peers
+            .iter()
+            .map(|p| {
+                format!(
+                    "{}: {}",
+                    p.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                    if p.get("online").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        "online"
+                    } else {
+                        "offline"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\\n");
+        let class = if paused {
+            "paused"
+        } else if online > 0 {
+            "connected"
+        } else {
+            "idle"
+        };
+        println!(
+            r#"{{"text":"{icon} {online}","tooltip":"qdrop — clipboard {}\n{tip}","class":"{class}"}}"#,
+            if paused { "paused" } else { "active" }
+        );
+        return Ok(());
+    }
+
+    println!(
+        "qdrop {} — clipboard sync {}",
+        resp.get("version").and_then(|v| v.as_str()).unwrap_or("?"),
+        if paused { "PAUSED" } else { "active" }
+    );
+    if peers.is_empty() {
+        println!("No paired peers.");
+    } else {
+        println!("{:<20} STATUS", "PEER");
+        for p in peers {
+            println!(
+                "{:<20} {}",
+                p.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                if p.get("online").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    "online"
+                } else {
+                    "offline"
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_clip(action: ClipAction) -> Result<()> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting async runtime")?;
+
+    let cmd = match action {
+        ClipAction::Pause => "clip_pause",
+        ClipAction::Resume => "clip_resume",
+        ClipAction::Status => "clip_status",
+        ClipAction::Toggle => {
+            let now = rt.block_on(qdrop_core::control::request("clip_status"))?;
+            if now
+                .get("clipboard_paused")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                "clip_resume"
+            } else {
+                "clip_pause"
+            }
+        }
+    };
     let resp = rt.block_on(qdrop_core::control::request(cmd))?;
 
     let paused = resp
@@ -321,8 +422,6 @@ fn cmd_clip(action: ClipAction) -> Result<()> {
         .map(|a| a.len())
         .unwrap_or(0);
     match action {
-        ClipAction::Pause => println!("Clipboard sync paused."),
-        ClipAction::Resume => println!("Clipboard sync resumed."),
         ClipAction::Status => {
             println!(
                 "Clipboard sync: {}",
@@ -330,6 +429,10 @@ fn cmd_clip(action: ClipAction) -> Result<()> {
             );
             println!("Connected peers: {connected}");
         }
+        _ => println!(
+            "Clipboard sync {}.",
+            if paused { "paused" } else { "resumed" }
+        ),
     }
     Ok(())
 }

@@ -145,9 +145,31 @@ async fn dispatch(req: Request, deps: &ControlDeps) -> serde_json::Value {
 }
 
 fn status_json(deps: &ControlDeps) -> serde_json::Value {
+    let connected = deps.bus.connected_ids();
+    let peers = qdrop_core::Peers::load().unwrap_or_default();
+    let state = qdrop_core::state::DaemonState::load().unwrap_or_default();
+
+    let peer_rows: Vec<serde_json::Value> = peers
+        .peers
+        .iter()
+        .map(|p| {
+            let online = connected.contains(&p.device_id);
+            json!({
+                "name": p.name,
+                "device_id": p.device_id,
+                "online": online,
+                "since_unix": state.online.get(&p.device_id),
+                "last_seen_unix": state.last_seen.get(&p.device_id),
+            })
+        })
+        .collect();
+
     json!({
         "ok": true,
+        "version": qdrop_core::VERSION,
         "clipboard_paused": deps.controls.clipboard_paused(),
-        "connected": deps.bus.connected_ids(),
+        "sync_images": deps.controls.sync_images(),
+        "connected": connected,
+        "peers": peer_rows,
     })
 }

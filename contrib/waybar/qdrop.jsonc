@@ -1,0 +1,17 @@
+// Waybar module for qdrop. Add to your waybar config `modules-right` (or
+// wherever) as "custom/qdrop", and merge this object in.
+//
+// `qdrop status --waybar` prints one line of JSON:
+//   {"text":"󰓅 1","tooltip":"qdrop — clipboard active\nlaptop: online","class":"connected"}
+//
+// Left-click toggles clipboard pause; right-click opens the config folder.
+{
+  "custom/qdrop": {
+    "exec": "qdrop status --waybar",
+    "return-type": "json",
+    "interval": 1,
+    "on-click": "qdrop clip --pause",
+    "on-click-right": "xdg-open ~/.config/qdrop",
+    "on-click-middle": "qdrop clip --resume"
+  }
+}
