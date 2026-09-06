@@ -180,6 +180,47 @@ intervention; fuzz suite green in CI.
 
 ---
 
+## M10 — Pre-authorized senders (`qdrop auth`)
+
+**Goal:** Bless a machine once so it can push to you forever without a prompt.
+
+Pairing (M2) establishes *mutual trust to connect*. This adds a second, opt-in
+layer on top: a per-peer "this device may drop things on me unattended" flag,
+so `require_confirm` (M4) can stay on for the world but off for the laptop you
+own.
+
+- `qdrop auth <name-or-id>` — run it while already paired **and connected** to
+  the target. The daemon sends an `AuthRequest` over the live (pinned-key TLS)
+  connection; the peer replies `AuthReply { hostname, macs, os }` with the MAC
+  addresses of its non-loopback interfaces. We record `authorized = true`,
+  `hostname`, and `macs` on that peer's entry in `peers.toml`.
+- New frames `AuthRequest` / `AuthReply`; `caps.auth` negotiated in `Hello` so
+  an older peer degrades gracefully (command errors with "peer too old").
+- Enforcement: an authorized peer's incoming files / URLs bypass the
+  confirmation gate — they land straight in `~/Downloads/qdrop/` even when
+  `require_confirm = true`. Unlisted peers are unaffected (still prompted /
+  routed to `pending/`). `require_confirm = "strict"` opts back in to prompting
+  everyone, authorized or not.
+- The **pinned Ed25519 key stays the security boundary.** The stored MAC is a
+  human-readable "which physical machine" label and a soft check: on a later
+  connect, a MAC that no longer matches any recorded value logs a warning (and
+  a desktop notification) but does **not** revoke authorization — MACs are
+  randomized/rotated and not trustworthy on their own.
+- `qdrop auth --remove <name>` revokes (back to prompting). `qdrop auth`
+  (no arg) or `qdrop peers` lists which peers are authorized, with the MAC and
+  hostname last seen.
+- Authorization is **one-directional**: `qdrop auth beta` lets *beta* push to
+  *this* machine unattended. `qdrop auth --mutual beta` asks beta to authorize
+  us back in the same exchange.
+
+**Done when:** with `require_confirm = true`, a file from an authorized peer
+lands directly in `~/Downloads/qdrop/` while a file from an unlisted peer still
+lands in `pending/`; `qdrop auth --remove` restores the prompt; reconnecting
+the authorized peer from a different network (new MAC) still works and only
+logs a notice.
+
+---
+
 ## Deferred (post-v1)
 
 - Clipboard history (start last-value only).
