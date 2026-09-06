@@ -4,10 +4,10 @@ Peer-to-peer clipboard, file, and link bridge for your own devices (macOS + Linu
 
 ## Status
 
-Milestone **M3** — bidirectional clipboard **text** sync between paired
-devices (macOS + Wayland), echo-loop safe, with `qdrop clip --pause/--resume/
---status`. Built on M2's pinned-key TLS. File send, images, and URL push are
-still ahead (see [`MILESTONES.md`](MILESTONES.md)).
+Milestone **M4** — file send. `qdrop send <path>... [--to name]` streams files
+to paired peers (64 KiB chunks, SHA-256 verified, atomic landing in
+`~/Downloads/qdrop/`, path-traversal-safe). Plus M3 clipboard text sync and
+M2 pinned-key TLS. URL push and images are next (see [`MILESTONES.md`](MILESTONES.md)).
 
 ## Layout
 

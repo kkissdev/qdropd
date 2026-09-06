@@ -1,16 +1,18 @@
 //! A tiny Unix-socket control channel: newline-delimited JSON requests and
-//! responses. `qdrop clip --pause/--resume/--status` drives it. M7 will grow
+//! responses. `qdrop clip`, `qdrop send`, and `qdrop open` drive it. M7 grows
 //! this into the full status/control surface.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 
 use crate::bus::PeerBus;
+use crate::filexfer::FileXfer;
 
 pub use qdrop_core::control::socket_path;
 
@@ -29,6 +31,14 @@ impl Controls {
     }
 }
 
+/// Shared handles the control server hands to request handlers.
+#[derive(Clone)]
+pub struct ControlDeps {
+    pub controls: Arc<Controls>,
+    pub bus: PeerBus,
+    pub filex: Arc<FileXfer>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 enum Request {
@@ -36,25 +46,20 @@ enum Request {
     ClipResume,
     ClipStatus,
     Status,
-}
-
-#[derive(Debug, Serialize)]
-struct Response {
-    ok: bool,
-    clipboard_paused: bool,
-    connected: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    Send {
+        paths: Vec<String>,
+        #[serde(default)]
+        to: Option<String>,
+    },
 }
 
 /// Bind the control socket and serve requests until the task is dropped.
-pub fn spawn(controls: Arc<Controls>, bus: PeerBus) -> Result<tokio::task::JoinHandle<()>> {
+pub fn spawn(deps: ControlDeps) -> Result<tokio::task::JoinHandle<()>> {
     let path = socket_path()?;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // A stale socket file from a previous run would block bind().
-    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(&path); // clear a stale socket
     let listener = UnixListener::bind(&path)
         .with_context(|| format!("binding control socket {}", path.display()))?;
     tracing::info!(socket = %path.display(), "control socket ready");
@@ -63,10 +68,9 @@ pub fn spawn(controls: Arc<Controls>, bus: PeerBus) -> Result<tokio::task::JoinH
         loop {
             match listener.accept().await {
                 Ok((stream, _)) => {
-                    let controls = controls.clone();
-                    let bus = bus.clone();
+                    let deps = deps.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = handle(stream, controls, bus).await {
+                        if let Err(e) = handle(stream, deps).await {
                             tracing::debug!("control client error: {e}");
                         }
                     });
@@ -80,7 +84,7 @@ pub fn spawn(controls: Arc<Controls>, bus: PeerBus) -> Result<tokio::task::JoinH
     }))
 }
 
-async fn handle(stream: UnixStream, controls: Arc<Controls>, bus: PeerBus) -> Result<()> {
+async fn handle(stream: UnixStream, deps: ControlDeps) -> Result<()> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
@@ -90,21 +94,8 @@ async fn handle(stream: UnixStream, controls: Arc<Controls>, bus: PeerBus) -> Re
     }
 
     let resp = match serde_json::from_str::<Request>(line) {
-        Ok(Request::ClipPause) => {
-            controls.set_clipboard_paused(true);
-            ok_response(&controls, &bus)
-        }
-        Ok(Request::ClipResume) => {
-            controls.set_clipboard_paused(false);
-            ok_response(&controls, &bus)
-        }
-        Ok(Request::ClipStatus) | Ok(Request::Status) => ok_response(&controls, &bus),
-        Err(e) => Response {
-            ok: false,
-            clipboard_paused: controls.clipboard_paused(),
-            connected: bus.connected_ids(),
-            error: Some(format!("bad request: {e}")),
-        },
+        Ok(req) => dispatch(req, &deps).await,
+        Err(e) => json!({ "ok": false, "error": format!("bad request: {e}") }),
     };
 
     let mut out = serde_json::to_vec(&resp)?;
@@ -113,11 +104,30 @@ async fn handle(stream: UnixStream, controls: Arc<Controls>, bus: PeerBus) -> Re
     Ok(())
 }
 
-fn ok_response(controls: &Controls, bus: &PeerBus) -> Response {
-    Response {
-        ok: true,
-        clipboard_paused: controls.clipboard_paused(),
-        connected: bus.connected_ids(),
-        error: None,
+async fn dispatch(req: Request, deps: &ControlDeps) -> serde_json::Value {
+    match req {
+        Request::ClipPause => {
+            deps.controls.set_clipboard_paused(true);
+            status_json(deps)
+        }
+        Request::ClipResume => {
+            deps.controls.set_clipboard_paused(false);
+            status_json(deps)
+        }
+        Request::ClipStatus | Request::Status => status_json(deps),
+        Request::Send { paths, to } => {
+            let paths: Vec<std::path::PathBuf> = paths.into_iter().map(Into::into).collect();
+            let outcomes = deps.filex.send(paths, to).await;
+            let ok = !outcomes.is_empty() && outcomes.iter().all(|o| o.ok);
+            json!({ "ok": ok, "sent": outcomes })
+        }
     }
+}
+
+fn status_json(deps: &ControlDeps) -> serde_json::Value {
+    json!({
+        "ok": true,
+        "clipboard_paused": deps.controls.clipboard_paused(),
+        "connected": deps.bus.connected_ids(),
+    })
 }

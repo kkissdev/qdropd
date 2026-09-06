@@ -29,6 +29,12 @@ impl PeerBus {
         self.0.lock().unwrap().keys().cloned().collect()
     }
 
+    /// The outbound sender for a connected peer, for callers that need
+    /// backpressure (`send().await`) rather than fire-and-forget.
+    pub fn sender(&self, device_id: &str) -> Option<mpsc::Sender<Message>> {
+        self.0.lock().unwrap().get(device_id).cloned()
+    }
+
     #[allow(dead_code)] // used from M4 (file send) onward
     pub fn is_empty(&self) -> bool {
         self.0.lock().unwrap().is_empty()

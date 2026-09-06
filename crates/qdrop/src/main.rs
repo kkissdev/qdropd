@@ -214,12 +214,60 @@ fn shell_quote(s: &str) -> String {
 }
 
 fn cmd_send(args: &cli::SendArgs) -> Result<()> {
+    let mut abs = Vec::new();
     for path in &args.paths {
-        if !path.exists() {
-            anyhow::bail!("no such file: {}", path.display());
+        if !path.is_file() {
+            anyhow::bail!("not a file: {}", path.display());
         }
+        abs.push(
+            std::fs::canonicalize(path)
+                .with_context(|| format!("resolving {}", path.display()))?
+                .to_string_lossy()
+                .into_owned(),
+        );
     }
-    not_yet("send", "M4")
+
+    let req = serde_json::json!({
+        "cmd": "send",
+        "paths": abs,
+        "to": args.to,
+    });
+    println!(
+        "Sending {} file(s){}...",
+        abs.len(),
+        args.to
+            .as_deref()
+            .map(|t| format!(" to {t}"))
+            .unwrap_or_default()
+    );
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("starting async runtime")?;
+    let resp = rt.block_on(qdrop_core::control::request_json(&req))?;
+
+    let mut all_ok = true;
+    if let Some(sent) = resp.get("sent").and_then(|v| v.as_array()) {
+        for s in sent {
+            let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let peer = s.get("peer").and_then(|v| v.as_str()).unwrap_or("?");
+            let ok = s.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+            let detail = s.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+            if ok {
+                println!("  ✓ {name} → {peer}");
+            } else {
+                all_ok = false;
+                println!("  ✗ {name} → {peer}: {detail}");
+            }
+        }
+    } else if let Some(err) = resp.get("error").and_then(|v| v.as_str()) {
+        anyhow::bail!("{err}");
+    }
+    if !all_ok {
+        anyhow::bail!("one or more transfers failed");
+    }
+    Ok(())
 }
 
 fn cmd_open(args: &cli::OpenArgs) -> Result<()> {

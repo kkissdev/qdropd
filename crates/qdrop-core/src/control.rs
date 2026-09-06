@@ -19,8 +19,13 @@ pub fn socket_path() -> Result<PathBuf> {
 }
 
 /// Send one `{"cmd":"<cmd>"}` request and return the parsed JSON response.
-/// Requires a tokio runtime.
 pub async fn request(cmd: &str) -> Result<serde_json::Value> {
+    request_json(&serde_json::json!({ "cmd": cmd })).await
+}
+
+/// Send an arbitrary JSON request object and return the parsed JSON response.
+/// Requires a tokio runtime.
+pub async fn request_json(req: &serde_json::Value) -> Result<serde_json::Value> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
 
@@ -28,13 +33,13 @@ pub async fn request(cmd: &str) -> Result<serde_json::Value> {
     let mut stream = UnixStream::connect(&path)
         .await
         .with_context(|| format!("connecting to {} (is qdropd running?)", path.display()))?;
-    stream
-        .write_all(format!("{{\"cmd\":\"{cmd}\"}}\n").as_bytes())
-        .await?;
+    let mut line = serde_json::to_vec(req)?;
+    line.push(b'\n');
+    stream.write_all(&line).await?;
     stream.flush().await?;
 
     let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    reader.read_line(&mut line).await?;
-    serde_json::from_str(line.trim()).context("parsing control response")
+    let mut resp = String::new();
+    reader.read_line(&mut resp).await?;
+    serde_json::from_str(resp.trim()).context("parsing control response")
 }

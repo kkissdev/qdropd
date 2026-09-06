@@ -10,6 +10,8 @@ mod clipboard;
 mod connection;
 mod control;
 mod discovery;
+mod filexfer;
+mod notify;
 mod secure;
 mod state;
 mod sync;
@@ -27,7 +29,8 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 use crate::bus::PeerBus;
-use crate::control::Controls;
+use crate::control::{ControlDeps, Controls};
+use crate::filexfer::FileXfer;
 use crate::transport::{TransportConfig, TransportEvent};
 
 #[derive(Debug, Parser)]
@@ -130,14 +133,43 @@ fn real_main() -> Result<()> {
             Some(ev_tx),
         );
 
+        let download_dir = qdrop_core::paths::downloads_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("qdrop-downloads"));
+        let filex = FileXfer::new(&config, bus.clone(), download_dir);
+
+        // Route inbound application frames to the right subsystem.
+        let (clip_tx, clip_rx) = tokio::sync::mpsc::channel::<(String, Message)>(64);
+        {
+            let filex = filex.clone();
+            let mut hub_rx = hub_rx;
+            tokio::spawn(async move {
+                while let Some((peer, msg)) = hub_rx.recv().await {
+                    match msg {
+                        Message::Clipboard { .. } => {
+                            let _ = clip_tx.send((peer, msg)).await;
+                        }
+                        Message::BlobStart { .. }
+                        | Message::BlobChunk { .. }
+                        | Message::BlobEnd { .. }
+                        | Message::BlobAck { .. } => filex.handle_inbound(peer, msg).await,
+                        _ => {}
+                    }
+                }
+            });
+        }
+
         sync::spawn(
             &config,
             device_id.clone(),
             bus.clone(),
-            hub_rx,
+            clip_rx,
             controls.clone(),
         );
-        let control = match control::spawn(controls.clone(), bus.clone()) {
+        let control = match control::spawn(ControlDeps {
+            controls: controls.clone(),
+            bus: bus.clone(),
+            filex: filex.clone(),
+        }) {
             Ok(h) => Some(h),
             Err(e) => {
                 tracing::warn!("control socket unavailable: {e:#}");

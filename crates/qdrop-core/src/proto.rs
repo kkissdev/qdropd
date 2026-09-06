@@ -115,6 +115,62 @@ pub enum Message {
         origin_id: String,
         entries: Vec<ClipEntry>,
     },
+
+    /// Begin a blob transfer. `name` is a bare filename (no path); the
+    /// receiver sanitises it again regardless.
+    BlobStart {
+        id: u64,
+        name: String,
+        size: u64,
+    },
+    /// One chunk of a blob (~64 KiB). Chunks for a given `id` arrive in order.
+    BlobChunk {
+        id: u64,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    /// End a blob transfer; `sha256` is the digest of the whole payload.
+    BlobEnd {
+        id: u64,
+        sha256: [u8; 32],
+    },
+    /// Receiver's verdict on a completed (or rejected) transfer.
+    BlobAck {
+        id: u64,
+        ok: bool,
+        detail: String,
+    },
+}
+
+/// Blob chunk size on the wire.
+pub const BLOB_CHUNK: usize = 64 * 1024;
+
+/// Validate an incoming blob filename. Returns the safe basename, or `None` if
+/// it tries to escape the download directory.
+pub fn safe_blob_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." {
+        return None;
+    }
+    // Must be exactly its own final component: no separators, no traversal,
+    // not absolute, no drive/UNC prefixes.
+    let p = std::path::Path::new(name);
+    let mut comps = p.components();
+    let only = comps.next();
+    if comps.next().is_some() {
+        return None;
+    }
+    match only {
+        Some(std::path::Component::Normal(os)) => {
+            let s = os.to_str()?;
+            if s == ".." || s.contains('/') || s.contains('\\') {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -159,6 +215,24 @@ mod tests {
             let bytes = rmp_serde::to_vec_named(&msg).unwrap();
             let back: Message = rmp_serde::from_slice(&bytes).unwrap();
             assert_eq!(msg, back);
+        }
+    }
+
+    #[test]
+    fn blob_name_sanitisation() {
+        assert_eq!(safe_blob_name("report.pdf").as_deref(), Some("report.pdf"));
+        assert_eq!(safe_blob_name("  a b.txt ").as_deref(), Some("a b.txt"));
+        for bad in [
+            "../../etc/passwd",
+            "/etc/passwd",
+            "a/b.txt",
+            "..",
+            ".",
+            "",
+            "foo/../bar",
+            r"..\windows",
+        ] {
+            assert_eq!(safe_blob_name(bad), None, "{bad:?} should be rejected");
         }
     }
 

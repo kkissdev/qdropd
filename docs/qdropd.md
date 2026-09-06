@@ -118,6 +118,20 @@ clipboard logs a warning and carries on.
   Unix socket (`$XDG_RUNTIME_DIR/qdropd.sock`, else `<config dir>/qdropd.sock`;
   override with `QDROP_CONTROL_SOCK`).
 
+## File transfer (M4)
+
+`qdrop send <path>... [--to <name>]` streams files to a connected peer (or all
+of them). Chunks are 64 KiB; one blob is in flight per peer at a time.
+
+- Received into `~/Downloads/qdrop/` (`QDROP_DOWNLOAD_DIR` overrides), SHA-256
+  verified, atomically renamed from a temp file. Filenames are sanitised —
+  path traversal / absolute paths are refused.
+- `require_confirm = true` routes incoming files to `~/Downloads/qdrop/pending/`
+  and notifies, instead of dropping them straight into Downloads.
+- Desktop notification on receipt (`osascript` / `notify-send`).
+- A drop mid-transfer aborts that blob; the send retries from the start once
+  the peer reconnects.
+
 ## What it does today
 
 Through M2 (discovery + authenticated transport):
